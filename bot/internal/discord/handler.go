@@ -14,10 +14,12 @@ func (c *Client) setupCommandSystem() {
 	c.registerAllCommands()
 	
 	c.session.AddHandler(c.handleInteraction)
+	c.session.AddHandler(c.handleMessageCreate)
 }
 
 func (c *Client) registerAllCommands() {
 	registerPingCommand(c.commands)
+	registerRadioCommands(c.commands)
 	
 	logger.InfoLogger.Printf("Registered %d commands", len(c.commands.GetAllCommands()))
 }
@@ -35,6 +37,8 @@ func (c *Client) handleInteraction(s *discordgo.Session, i *discordgo.Interactio
 	}
 	logger.InfoLogger.Printf("Slash command '%s' executed by user %s", cmdName, userName)
 	
+	c.StartActivity()
+	
 	cmd, exists := c.commands.GetCommand(cmdName)
 	if !exists {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -48,6 +52,14 @@ func (c *Client) handleInteraction(s *discordgo.Session, i *discordgo.Interactio
 	}
 	
 	cmd.Execute(s, i, c)
+}
+
+func (c *Client) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author.Bot {
+		return
+	}
+	
+	c.StartActivity()
 }
 
 func (c *Client) RefreshSlashCommands() error {

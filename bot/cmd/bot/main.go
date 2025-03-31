@@ -28,9 +28,13 @@ func main() {
 	}
 
 	client, err := discord.NewClient(discord.ClientConfig{
-		Token: cfg.DISCORD_TOKEN,
-		ClientID: cfg.CLIENT_ID,
-		DefaultVolume: cfg.VOLUME,
+		Token:          cfg.DISCORD_TOKEN,
+		ClientID:       cfg.CLIENT_ID,
+		DefaultVolume:  cfg.VOLUME,
+		DefaultGuildID: cfg.DEFAULT_GUILD_ID,
+		DefaultVCID:    cfg.DEFAULT_VC_ID,
+		RadioURL:       cfg.RADIO_URL,
+		IdleTimeout:    cfg.IDLE_TIMEOUT,
 	})
 
 	if err != nil {
