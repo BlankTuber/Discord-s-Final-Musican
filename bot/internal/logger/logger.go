@@ -25,12 +25,18 @@ var (
 func Setup(level int){
 	currentLevel = level
 
-	ErrorLogger = log.New(os.Stderr, "Error: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrorLogger = log.New(os.Stderr, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 
 	if level >= LevelWarning {
-		WarnLogger = log.New(os.Stderr, "Warning: ", log.Ldate|log.Ltime)
+		WarnLogger = log.New(os.Stderr, "WARNING: ", log.Ldate|log.Ltime)
 	} else {
 		WarnLogger = log.New(io.Discard, "", 0)
+	}
+
+	if level >= LevelInfo {
+		InfoLogger = log.New(os.Stdout, "INFO: ", log.Ldate|log.Ltime)
+	} else {
+		InfoLogger = log.New(io.Discard, "", 0)
 	}
 
 	if level >= LevelDebug {
