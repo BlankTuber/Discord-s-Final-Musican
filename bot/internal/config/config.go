@@ -48,7 +48,7 @@ func Load(configPath string) (Config, error) {
 	}
 	
 	if config.IDLE_TIMEOUT == 0 {
-		config.IDLE_TIMEOUT = 300
+		config.IDLE_TIMEOUT = 30
 	}
 	
 	return config, nil

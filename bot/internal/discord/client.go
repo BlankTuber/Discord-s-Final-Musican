@@ -356,7 +356,7 @@ func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.Voice
 				logger.InfoLogger.Println("All users left voice channel, checking if we should enter idle mode")
 				
 				go func() {
-					time.Sleep(3 * time.Second)
+					time.Sleep(1 * time.Second)
 					if c.checkChannelEmpty(guildID, vc.ChannelID) {
 						c.startIdleMode()
 					}

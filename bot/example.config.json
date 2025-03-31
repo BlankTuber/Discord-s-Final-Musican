@@ -5,5 +5,5 @@
     "default_guild_id": "",
     "default_vc_id": "",
     "radio_url": "https://listen.moe/stream",
-    "idle_timeout": 300
+    "idle_timeout": 30
 }
