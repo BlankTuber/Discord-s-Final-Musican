@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -26,6 +27,7 @@ type RadioStreamer struct {
 	stopChan     chan bool
 	isPaused     bool
 	isActive     bool
+	mu           sync.RWMutex
 }
 
 func NewRadioStreamer(client *Client, streamURL string, volume float32) *RadioStreamer {
@@ -44,12 +46,25 @@ func (rs *RadioStreamer) SetStream(url string) {
 		return
 	}
 	
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	
+	oldURL := rs.streamURL
 	rs.streamURL = url
 	
-	if rs.isActive && !rs.isPaused {
-		rs.Stop()
-		time.Sleep(1 * time.Second)
-		go rs.Start()
+	// Only restart if URL actually changed and stream is active
+	if rs.isActive && !rs.isPaused && oldURL != url {
+		logger.InfoLogger.Printf("Radio stream URL changed, restarting stream")
+		select {
+		case rs.stopChan <- true:
+		default:
+		}
+		
+		go func() {
+			// Let current stream properly shutdown
+			time.Sleep(1 * time.Second)  
+			rs.Start()
+		}()
 	}
 }
 
@@ -58,31 +73,59 @@ func (rs *RadioStreamer) SetVolume(volume float32) {
 		return
 	}
 	
+	rs.mu.Lock()
+	oldVolume := rs.volume
 	rs.volume = volume
+	volumeChanged := oldVolume != volume
+	isActive := rs.isActive
+	isPaused := rs.isPaused
+	rs.mu.Unlock()
 	
-	if rs.isActive && !rs.isPaused {
-		rs.Stop()
-		time.Sleep(1 * time.Second)
-		go rs.Start()
+	// Only restart if volume actually changed and stream is active
+	if isActive && !isPaused && volumeChanged {
+		logger.InfoLogger.Printf("Radio volume changed, restarting stream")
+		select {
+		case rs.stopChan <- true:
+		default:
+		}
+		
+		go func() {
+			// Let current stream properly shutdown
+			time.Sleep(1 * time.Second)
+			rs.Start()
+		}()
 	}
 }
 
 func (rs *RadioStreamer) Start() {
+	rs.mu.Lock()
 	if rs.isPaused {
 		rs.isPaused = false
+		rs.mu.Unlock()
+		return
 	}
 	
 	if rs.isActive {
+		rs.mu.Unlock()
 		return
 	}
 	
 	rs.isActive = true
+	rs.mu.Unlock()
 	
 	go rs.streamLoop()
 }
 
 func (rs *RadioStreamer) streamLoop() {
-	for rs.isActive {
+	for {
+		rs.mu.RLock()
+		active := rs.isActive
+		rs.mu.RUnlock()
+		
+		if !active {
+			return
+		}
+		
 		vc, ok := rs.client.GetCurrentVoiceConnection()
 		if !ok || vc == nil {
 			logger.ErrorLogger.Println("Cannot start radio stream: not connected to a voice channel")
@@ -93,7 +136,11 @@ func (rs *RadioStreamer) streamLoop() {
 		logger.InfoLogger.Printf("Starting radio stream from URL: %s", rs.streamURL)
 		err := rs.streamAudio(vc)
 		
-		if !rs.isActive {
+		rs.mu.RLock()
+		active = rs.isActive
+		rs.mu.RUnlock()
+		
+		if !active {
 			return
 		}
 		
@@ -105,30 +152,59 @@ func (rs *RadioStreamer) streamLoop() {
 }
 
 func (rs *RadioStreamer) Stop() {
+	rs.mu.Lock()
+	if !rs.isActive {
+		rs.mu.Unlock()
+		return
+	}
+	
 	rs.isActive = false
+	rs.mu.Unlock()
+	
 	select {
 	case rs.stopChan <- true:
 	default:
 		rs.stopChan = make(chan bool, 1)
+		rs.stopChan <- true
 	}
 }
 
 func (rs *RadioStreamer) Pause() {
+	rs.mu.Lock()
+	if !rs.isActive || rs.isPaused {
+		rs.mu.Unlock()
+		return
+	}
+	
 	rs.isPaused = true
+	rs.mu.Unlock()
+	
 	rs.Stop()
 }
 
 func (rs *RadioStreamer) Resume() {
-	if rs.isPaused {
-		rs.isPaused = false
-		go rs.Start()
+	rs.mu.Lock()
+	if !rs.isPaused {
+		rs.mu.Unlock()
+		return
 	}
+	
+	rs.isPaused = false
+	rs.isActive = true
+	rs.mu.Unlock()
+	
+	go rs.streamLoop()
 }
 
 func (rs *RadioStreamer) streamAudio(vc *discordgo.VoiceConnection) error {
 	client := &http.Client{}
 	
-	req, err := http.NewRequest("GET", rs.streamURL, nil)
+	rs.mu.RLock()
+	streamURL := rs.streamURL
+	volume := rs.volume
+	rs.mu.RUnlock()
+	
+	req, err := http.NewRequest("GET", streamURL, nil)
 	if err != nil {
 		return fmt.Errorf("error creating request: %v", err)
 	}
@@ -160,7 +236,7 @@ func (rs *RadioStreamer) streamAudio(vc *discordgo.VoiceConnection) error {
 		"-f", "s16le",
 		"-ar", "48000",
 		"-ac", "2",
-		"-af", fmt.Sprintf("volume=%f", rs.volume),
+		"-af", fmt.Sprintf("volume=%f", volume),
 		"-loglevel", "warning",
 		"pipe:1",
 	)

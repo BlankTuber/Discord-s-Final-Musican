@@ -102,6 +102,8 @@ func (c *Client) Connect() error {
 	
 	c.startIdleChecker()
 	
+	go c.startIdleMode()
+	
 	return c.RefreshSlashCommands()
 }
 
@@ -130,13 +132,8 @@ func (c *Client) StartActivity() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
+	// Only update the activity timestamp, don't stop radio
 	c.lastActivityTime = time.Now()
-	
-	if c.isInIdleMode {
-		logger.InfoLogger.Println("Exiting idle mode due to user activity")
-		c.isInIdleMode = false
-		c.radioStreamer.Stop()
-	}
 }
 
 func (c *Client) GetCurrentVoiceConnection() (*discordgo.VoiceConnection, bool) {
@@ -332,7 +329,7 @@ func (c *Client) handleReady(s *discordgo.Session, r *discordgo.Ready) {
 	logger.InfoLogger.Printf("Logged in as: %s#%s", s.State.User.Username, s.State.User.Discriminator)
 	logger.InfoLogger.Printf("Bot is in %d servers", len(r.Guilds))
 	
-	s.UpdateGameStatus(0, "/play to add music")
+	s.UpdateGameStatus(0, "Radio Mode | Use /help")
 }
 
 func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {

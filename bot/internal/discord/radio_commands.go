@@ -7,7 +7,6 @@ import (
 	"quidque.com/discord-musican/internal/logger"
 )
 
-// Register radio-related commands
 func registerRadioCommands(registry *CommandRegistry) {
 	registry.Register(&SetDefaultVCCommand{})
 	registry.Register(&RadioURLCommand{})
@@ -16,7 +15,6 @@ func registerRadioCommands(registry *CommandRegistry) {
 	registry.Register(&RadioStopCommand{})
 }
 
-// SetDefaultVCCommand sets the default voice channel for idle mode
 type SetDefaultVCCommand struct{}
 
 func (c *SetDefaultVCCommand) Name() string {
@@ -39,16 +37,13 @@ func (c *SetDefaultVCCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *SetDefaultVCCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-	// Acknowledge the command
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 	
-	// Get the channel option
 	options := i.ApplicationCommandData().Options
 	channelOption := options[0].ChannelValue(s)
 	
-	// Validate that it's a voice channel
 	channel, err := s.Channel(channelOption.ID)
 	if err != nil || channel.Type != discordgo.ChannelTypeGuildVoice {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -57,10 +52,8 @@ func (c *SetDefaultVCCommand) Execute(s *discordgo.Session, i *discordgo.Interac
 		return
 	}
 	
-	// Set the default voice channel
 	client.SetDefaultVoiceChannel(i.GuildID, channel.ID)
 	
-	// Respond with success
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr("✅ Default idle voice channel set to **" + channel.Name + "**"),
 	})
@@ -69,7 +62,6 @@ func (c *SetDefaultVCCommand) Execute(s *discordgo.Session, i *discordgo.Interac
 		channel.Name, channel.ID, i.GuildID)
 }
 
-// RadioURLCommand sets the radio stream URL
 type RadioURLCommand struct{}
 
 func (c *RadioURLCommand) Name() string {
@@ -92,25 +84,20 @@ func (c *RadioURLCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *RadioURLCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-	// Acknowledge the command
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 	
-	// Get the URL option
 	options := i.ApplicationCommandData().Options
 	url := options[0].StringValue()
 	
-	// Set the radio URL
 	client.SetRadioURL(url)
 	
-	// Respond with success
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr("✅ Radio stream URL set to " + url),
 	})
 }
 
-// RadioVolumeCommand sets the radio volume
 type RadioVolumeCommand struct{}
 
 func (c *RadioVolumeCommand) Name() string {
@@ -135,16 +122,13 @@ func (c *RadioVolumeCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *RadioVolumeCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-	// Acknowledge the command
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 	
-	// Get the volume option
 	options := i.ApplicationCommandData().Options
 	volume := float32(options[0].FloatValue())
 	
-	// Set the volume
 	client.mu.Lock()
 	client.currentVolume = volume
 	streamer := client.radioStreamer
@@ -152,13 +136,11 @@ func (c *RadioVolumeCommand) Execute(s *discordgo.Session, i *discordgo.Interact
 	
 	streamer.SetVolume(volume)
 	
-	// Respond with success
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(fmt.Sprintf("✅ Radio volume set to %.1f", volume)),
+		Content: stringPtr(fmt.Sprintf("✅ Radio volume set to %.2f", volume)),
 	})
 }
 
-// RadioStartCommand manually starts the radio
 type RadioStartCommand struct{}
 
 func (c *RadioStartCommand) Name() string {
@@ -174,12 +156,10 @@ func (c *RadioStartCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-	// Acknowledge the command
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 	
-	// Check if the user is in a voice channel
 	channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -188,7 +168,6 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 	
-	// Join the voice channel
 	err = client.JoinVoiceChannel(i.GuildID, channelID)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -197,28 +176,22 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 	
-	// Set this guild as the default for idle mode
 	client.SetDefaultVoiceChannel(i.GuildID, channelID)
 	
-	// Start radio mode
 	client.mu.Lock()
 	client.isInIdleMode = true
 	streamer := client.radioStreamer
 	client.mu.Unlock()
 	
-	// Start the stream
 	go streamer.Start()
 	
-	// Update presence
 	s.UpdateGameStatus(0, "Radio Mode | Use /help")
 	
-	// Respond with success
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr("✅ Radio mode started!"),
 	})
 }
 
-// RadioStopCommand stops the radio
 type RadioStopCommand struct{}
 
 func (c *RadioStopCommand) Name() string {
@@ -234,7 +207,6 @@ func (c *RadioStopCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *RadioStopCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-	// Acknowledge the command
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -252,19 +224,15 @@ func (c *RadioStopCommand) Execute(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 	
-	// Stop the radio
 	streamer.Stop()
 	
-	// Update presence
 	s.UpdateGameStatus(0, "/play to add music")
 	
-	// Respond with success
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr("✅ Radio stream stopped."),
 	})
 }
 
-// Helper for float pointers
 func floatPtr(f float64) *float64 {
 	return &f
 }
