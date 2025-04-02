@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 tokio = "1.44.1"
+which = "7.0.2"
 yt-dlp = { version = "1.3.2", features = ["tracing"] }
