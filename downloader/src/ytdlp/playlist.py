@@ -4,6 +4,7 @@ from ytdlp import utils
 
 def download(url, download_path, max_items=None, max_duration_seconds=None, max_size_mb=None, allow_live=False):
     platform = utils.get_platform(url)
+    platform_prefix = utils.get_platform_prefix(platform)
     
     try:
         with yt_dlp.YoutubeDL({'skip_download': True, 'quiet': True, 'noplaylist': False}) as ydl:
@@ -15,18 +16,21 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
             
             playlist_title = info.get('title', 'Unknown Playlist')
             playlist_id = info.get('id', '')
-            playlist_dir = f"{playlist_id}_{playlist_title}"
+            
+            playlist_dir = f"{platform_prefix}_{playlist_id}"
             playlist_path = os.path.join(download_path, playlist_dir)
-            utils.ensure_directory(playlist_path)
+            os.makedirs(playlist_path, exist_ok=True)
             
             results = []
-            for i, entry in enumerate(info.get('entries', [])):
+            entries = list(info.get('entries', []))
+            
+            if max_items:
+                entries = entries[:max_items]
+            
+            for i, entry in enumerate(entries):
                 if not entry:
                     continue
-                    
-                if max_items and i >= max_items:
-                    break
-                    
+                
                 if not allow_live and entry.get('duration') is None:
                     print(f"Skipping playlist item: Live stream detected")
                     continue
@@ -39,18 +43,21 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
                     print(f"Skipping playlist item: File too large")
                     continue
                 
-                filename = utils.get_sanitized_filename(entry)
                 track_number = f"{i+1:02d}"
-                final_filename = f"{track_number}_{filename}"
-                full_path = os.path.join(playlist_path, final_filename)
+                video_id = entry.get('id')
+                if not video_id:
+                    continue
+                    
+                filename = f"{track_number}_{platform_prefix}_{video_id}.mp3"
+                full_path = os.path.abspath(os.path.join(playlist_path, filename))
                 
-                if utils.file_exists(full_path):
-                    print(f"File already exists: {final_filename}")
+                if os.path.isfile(full_path):
+                    print(f"File already exists: {filename}")
                     results.append({
                         'title': entry.get('title', 'Unknown'),
                         'filename': full_path,
                         'duration': entry.get('duration'),
-                        'file_size': utils.get_file_size(full_path),
+                        'file_size': os.path.getsize(full_path),
                         'platform': platform,
                         'skipped': True
                     })
@@ -63,28 +70,32 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
                         'preferredcodec': 'mp3',
                         'preferredquality': '192',
                     }],
-                    'outtmpl': os.path.join(playlist_path, f"{track_number}_%(id)s_%(title)s"),
+                    'outtmpl': os.path.join(playlist_path, f"{track_number}_{platform_prefix}_%(id)s.%(ext)s"),
                     'progress_hooks': [utils.progress_hook],
                     'ignoreerrors': False,
                 }
                 
                 try:
-                    item_info = yt_dlp.YoutubeDL(ydl_opts).extract_info(entry['webpage_url'], download=True)
-                    
-                    if not item_info:
-                        continue
+                    with yt_dlp.YoutubeDL(ydl_opts) as item_ydl:
+                        item_info = item_ydl.extract_info(entry['webpage_url'], download=True)
                         
-                    downloaded_file = os.path.join(playlist_path, f"{track_number}_{item_info['id']}_{item_info['title']}.mp3")
-                    
-                    utils.rename_file(downloaded_file, full_path)
-                    
-                    results.append({
-                        'title': item_info.get('title', 'Unknown'),
-                        'filename': full_path,
-                        'duration': item_info.get('duration'),
-                        'file_size': utils.get_file_size(full_path),
-                        'platform': platform
-                    })
+                        if not item_info:
+                            continue
+                        
+                        filename = f"{track_number}_{platform_prefix}_{item_info['id']}.mp3"
+                        full_path = os.path.join(playlist_path, filename)
+                        
+                        file_exists = os.path.exists(full_path)
+                        file_size = os.path.getsize(full_path) if file_exists else None
+                        
+                        results.append({
+                            'title': item_info.get('title', 'Unknown'),
+                            'filename': full_path,
+                            'duration': item_info.get('duration'),
+                            'file_size': file_size,
+                            'platform': platform,
+                            'skipped': False
+                        })
                 except Exception as e:
                     print(f"Error downloading playlist item: {e}")
             

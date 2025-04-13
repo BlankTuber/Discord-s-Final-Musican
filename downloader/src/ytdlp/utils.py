@@ -30,27 +30,39 @@ def get_platform(url):
     
     return "unknown"
 
-def get_sanitized_filename(info):
-    video_id = info.get('id', '')
-    return f"{video_id}.mp3"
+def get_platform_prefix(platform):
+    if 'youtube.com' in platform:
+        return 'youtube'
+    elif 'music.youtube.com' in platform:
+        return 'ytmusic'
+    elif 'soundcloud.com' in platform:
+        return 'soundcloud'
+    elif 'spotify.com' in platform:
+        return 'spotify'
+    elif 'bandcamp.com' in platform:
+        return 'bandcamp'
+    
+    match = re.search(r'https?://([^/\.]+)', platform)
+    if match:
+        return match.group(1)
+    
+    return "unknown"
+
+def sanitize_string(text):
+    if not text:
+        return "untitled"
+    
+    text = re.sub(r'[\\/*?:"<>|]', '', text)
+    text = re.sub(r'[\s\-\+]+', '_', text)
+    text = re.sub(r'[^\w\-\.]', '', text)
+    if len(text) > 100:
+        text = text[:100]
+    
+    return text
 
 def ensure_directory(directory_path):
     os.makedirs(directory_path, exist_ok=True)
     return directory_path
-
-def file_exists(filepath):
-    return os.path.exists(filepath)
-
-def get_file_size(filepath):
-    if file_exists(filepath):
-        return os.path.getsize(filepath)
-    return None
-
-def rename_file(old_path, new_path):
-    if old_path != new_path and file_exists(old_path):
-        os.rename(old_path, new_path)
-        return True
-    return False
 
 def match_filter_func(info, max_duration_seconds=None, max_size_mb=None, allow_live=False):
     if not allow_live and info.get('duration') is None:

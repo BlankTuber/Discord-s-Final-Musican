@@ -20,6 +20,7 @@ def load_config():
     except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"Config error, using defaults: {e}")
     
+    config["download_path"] = os.path.abspath(os.path.expanduser(config["download_path"]))
     os.makedirs(config["download_path"], exist_ok=True)
     print(f"Download directory ready: {config['download_path']}")
     
