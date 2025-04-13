@@ -1,0 +1,5 @@
+{
+    "download_path": "../../shared/",
+    "uds_link": "/tmp/downloader.sock",
+    "allowed_origins": ["https://youtube.com"]
+}
