@@ -30,7 +30,7 @@
 
 ## Download Audio Example
 
-### Request
+### Request Audio
 
 ```json
 {
@@ -75,7 +75,7 @@
 
 ## Download Playlist Example
 
-### Request
+### Request Playlist
 
 ```json
 {
@@ -91,7 +91,7 @@
 }
 ```
 
-### Success Response
+### Playlist Success Response
 
 ```json
 {
@@ -132,7 +132,7 @@
 
 ## Search Example
 
-### Request
+### Request Search
 
 ```json
 {
@@ -147,7 +147,7 @@
 }
 ```
 
-### Success Response
+### Search Success Response
 
 ```json
 {
