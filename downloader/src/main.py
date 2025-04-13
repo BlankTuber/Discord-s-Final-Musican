@@ -1,6 +1,9 @@
 import json
 import os
+import signal
+import time
 import ytdlp_handler
+import uds_handler
 
 def load_config():
     config = {
@@ -30,38 +33,30 @@ def main():
     print(f"Allowed origins: {config['allowed_origins']}")
     
     ytdlp_handler.initialize(config)
+    uds_handler.initialize(config)
     
-    print("\n--- Testing single audio download ---")
-    test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-    print(f"Downloading: {test_url}")
-    result = ytdlp_handler.download_audio(test_url, max_duration_seconds=600, max_size_mb=50)
-    
-    if result:
-        if result.get('skipped'):
-            print(f"Download skipped - file already exists!")
-        else:
-            print(f"Download successful!")
-        
-        print(f"Title: {result['title']}")
-        print(f"Saved as: {result['filename']}")
-        print(f"Duration: {result['duration']} seconds")
+    if uds_handler.start_server():
+        print(f"UDS server listening on {config['uds_link']}")
     else:
-        print("Download failed or was skipped")
+        print("Failed to start UDS server")
     
-    print("\n--- Testing search functionality ---")
-    search_term = "lofi beats"
-    print(f"Searching for: {search_term}")
-    search_results = ytdlp_handler.search(search_term, limit=3)
+    def shutdown_handler(sig, frame):
+        print("\nShutting down gracefully...")
+        uds_handler.stop_server()
+        print("Goodbye!")
+        exit(0)
     
-    if search_results:
-        print(f"Found {len(search_results)} results:")
-        for i, result in enumerate(search_results, 1):
-            print(f"{i}. {result['title']} by {result['uploader']}")
-            print(f"   URL: {result['url']}")
-            print(f"   Duration: {result['duration']} seconds")
-            print()
-    else:
-        print("Search returned no results")
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    
+    print("\nServer is running. Press Ctrl+C to exit.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        shutdown_handler(None, None)
 
 if __name__ == "__main__":
     main()
