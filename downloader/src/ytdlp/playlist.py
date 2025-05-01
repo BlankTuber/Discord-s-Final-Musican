@@ -26,10 +26,6 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
             playlist_title = info.get('title', 'Unknown Playlist')
             playlist_id = info.get('id', '')
             
-            playlist_dir = f"{platform_prefix}_{playlist_id}"
-            playlist_path = os.path.join(download_path, playlist_dir)
-            os.makedirs(playlist_path, exist_ok=True)
-            
             results = []
             entries = list(info.get('entries', []))
             
@@ -60,11 +56,11 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
                     print(f"Skipping unavailable playlist item")
                     continue
                 
-                track_number = f"{i+1:02d}"
                 video_id = entry.get('id')
                 
-                filename = f"{track_number}_{platform_prefix}_{video_id}.mp3"
-                full_path = os.path.abspath(os.path.join(playlist_path, filename))
+                # Use the same naming scheme as single audio downloads
+                filename = f"{platform_prefix}_{video_id}.mp3"
+                full_path = os.path.abspath(os.path.join(download_path, filename))
                 
                 if os.path.isfile(full_path):
                     print(f"File already exists: {filename}")
@@ -163,7 +159,8 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
                         'preferredcodec': 'mp3',
                         'preferredquality': '192',
                     }],
-                    'outtmpl': os.path.join(playlist_path, f"{track_number}_{platform_prefix}_%(id)s.%(ext)s"),
+                    # Use the same output template as single audio downloads
+                    'outtmpl': os.path.join(download_path, f"{platform_prefix}_%(id)s.%(ext)s"),
                     'progress_hooks': [utils.progress_hook],
                     'socket_timeout': 30,
                     'ignoreerrors': True,  # Don't stop on download errors
@@ -190,8 +187,8 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
                             })
                             continue
                         
-                        filename = f"{track_number}_{platform_prefix}_{item_info['id']}.mp3"
-                        full_path = os.path.join(playlist_path, filename)
+                        filename = f"{platform_prefix}_{item_info['id']}.mp3"
+                        full_path = os.path.join(download_path, filename)
                         
                         file_exists = os.path.exists(full_path)
                         file_size = os.path.getsize(full_path) if file_exists else None
