@@ -3,13 +3,20 @@ from ytdlp import utils
 
 def find(query, platform='youtube', limit=5, include_live=False):
     search_url = None
+    allowed_platform = None
     
-    if platform == 'youtube' or platform == 'https://youtube.com':
+    platform = platform.lower()
+    
+    # Handle different platform inputs
+    if platform in ['youtube', 'youtu.be', 'youtube.com', 'https://youtube.com', 'https://youtu.be']:
         search_url = f'ytsearch{limit*2}:{query}'
         allowed_platform = 'https://youtube.com'
-    elif platform == 'soundcloud' or platform == 'https://soundcloud.com':
+    elif platform in ['soundcloud', 'soundcloud.com', 'https://soundcloud.com']:
         search_url = f'scsearch{limit*2}:{query}'
         allowed_platform = 'https://soundcloud.com'
+    elif platform in ['music.youtube.com', 'ytmusic', 'youtube music', 'https://music.youtube.com']:
+        search_url = f'ytsearch{limit*2}:{query} site:music.youtube.com'
+        allowed_platform = 'https://music.youtube.com'
     else:
         print(f"Search not supported for platform: {platform}")
         return None
@@ -48,13 +55,26 @@ def find(query, platform='youtube', limit=5, include_live=False):
                         print(f"Skipping likely radio stream: {entry.get('title', 'Unknown')}")
                         continue
                 
+                # Extract thumbnail URL properly
+                thumbnail = entry.get('thumbnail', '')
+                if isinstance(thumbnail, dict) and 'url' in thumbnail:
+                    thumbnail = thumbnail['url']
+                
+                # Get direct URL for the video/audio
+                url = entry.get('webpage_url') or entry.get('url', '')
+                
+                # Get uploader information
+                uploader = entry.get('uploader', entry.get('channel', 'Unknown'))
+                
                 results.append({
                     'title': entry.get('title', 'Unknown'),
-                    'url': entry.get('webpage_url'),
+                    'url': url,
                     'duration': entry.get('duration'),
-                    'uploader': entry.get('uploader'),
-                    'thumbnail': entry.get('thumbnail'),
-                    'platform': allowed_platform
+                    'uploader': uploader,
+                    'thumbnail': thumbnail,
+                    'platform': allowed_platform,
+                    'id': entry.get('id', ''),
+                    'live_status': entry.get('is_live', False)
                 })
                 
                 if len(results) >= limit:

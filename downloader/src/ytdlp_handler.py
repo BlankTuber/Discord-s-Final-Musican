@@ -12,6 +12,7 @@ def download_audio(url, max_duration_seconds=None, max_size_mb=None, allow_live=
     
     if platform not in config["allowed_origins"]:
         print(f"Platform '{platform}' is not in the allowed origins list.")
+        print(f"Allowed origins: {config['allowed_origins']}")
         return None
     
     return audio.download(
@@ -27,6 +28,7 @@ def download_playlist(url, max_items=None, max_duration_seconds=None, max_size_m
     
     if platform not in config["allowed_origins"]:
         print(f"Platform '{platform}' is not in the allowed origins list.")
+        print(f"Allowed origins: {config['allowed_origins']}")
         return None
     
     return playlist.download(
@@ -39,21 +41,34 @@ def download_playlist(url, max_items=None, max_duration_seconds=None, max_size_m
     )
 
 def search(query, platform='youtube', limit=5, include_live=False):
-    if platform == 'youtube' or platform == 'https://youtube.com':
+    # Normalize platform string
+    platform_lower = platform.lower()
+    allowed_platform = None
+    
+    # Map user input to specific platform identifiers
+    if platform_lower in ['youtube', 'youtu.be', 'youtube.com', 'https://youtube.com', 'https://youtu.be']:
         allowed_platform = 'https://youtube.com'
-    elif platform == 'soundcloud' or platform == 'https://soundcloud.com':
+    elif platform_lower in ['soundcloud', 'soundcloud.com', 'https://soundcloud.com']:
         allowed_platform = 'https://soundcloud.com'
+    elif platform_lower in ['music.youtube.com', 'ytmusic', 'youtube music', 'https://music.youtube.com']:
+        allowed_platform = 'https://music.youtube.com'
     else:
-        print(f"Search not supported for platform: {platform}")
-        return None
+        # Try to get the platform from the URL
+        allowed_platform = utils.get_platform(platform)
     
     if allowed_platform not in config["allowed_origins"]:
         print(f"Platform '{allowed_platform}' is not in the allowed origins list.")
+        print(f"Allowed origins: {config['allowed_origins']}")
         return None
     
-    return search_module.find(
+    results = search_module.find(
         query, 
         platform=platform, 
         limit=limit, 
         include_live=include_live
     )
+    
+    if not results:
+        return {"results": []}
+        
+    return {"results": results}

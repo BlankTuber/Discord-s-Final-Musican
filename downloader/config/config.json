@@ -1,5 +1,15 @@
 {
     "download_path": "../../shared/",
     "uds_link": "/tmp/downloader.sock",
-    "allowed_origins": ["https://youtube.com"]
+    "allowed_origins": [
+        "https://youtube.com",
+        "https://youtu.be",
+        "https://soundcloud.com",
+        "https://music.youtube.com",
+        "https://open.spotify.com",
+        "https://bandcamp.com",
+        "https://www.twitch.tv",
+        "https://vimeo.com",
+        "https://dailymotion.com"
+    ]
 }

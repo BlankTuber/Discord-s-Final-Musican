@@ -16,10 +16,16 @@ def get_platform(url):
         return 'https://music.youtube.com'  
     elif 'soundcloud.com' in url:
         return 'https://soundcloud.com'
-    elif 'spotify.com' in url:
-        return 'https://spotify.com'
+    elif 'spotify.com' in url or 'open.spotify.com' in url:
+        return 'https://open.spotify.com'
     elif 'bandcamp.com' in url:
         return 'https://bandcamp.com'
+    elif 'twitch.tv' in url:
+        return 'https://www.twitch.tv'
+    elif 'vimeo.com' in url:
+        return 'https://vimeo.com'
+    elif 'dailymotion.com' in url:
+        return 'https://dailymotion.com'
     
     match = re.search(r'https?://([^/]+)', url)
     if match:
@@ -31,18 +37,24 @@ def get_platform(url):
     return "unknown"
 
 def get_platform_prefix(platform):
-    if 'youtube.com' in platform:
+    if 'youtube.com' in platform or 'youtu.be' in platform:
         return 'youtube'
     elif 'music.youtube.com' in platform:
         return 'ytmusic'
     elif 'soundcloud.com' in platform:
         return 'soundcloud'
-    elif 'spotify.com' in platform:
+    elif 'spotify.com' in platform or 'open.spotify.com' in platform:
         return 'spotify'
     elif 'bandcamp.com' in platform:
         return 'bandcamp'
+    elif 'twitch.tv' in platform:
+        return 'twitch'
+    elif 'vimeo.com' in platform:
+        return 'vimeo'
+    elif 'dailymotion.com' in platform:
+        return 'dailymotion'
     
-    match = re.search(r'https?://([^/\.]+)', platform)
+    match = re.search(r'https?://(?:www\.)?([^/\.]+)', platform)
     if match:
         return match.group(1)
     
