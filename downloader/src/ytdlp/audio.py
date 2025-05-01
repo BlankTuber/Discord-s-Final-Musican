@@ -7,7 +7,11 @@ def download(url, download_path, max_duration_seconds=None, max_size_mb=None, al
     platform_prefix = utils.get_platform_prefix(platform)
     
     try:
-        with yt_dlp.YoutubeDL({'skip_download': True, 'quiet': True}) as ydl:
+        with yt_dlp.YoutubeDL({
+            'skip_download': True, 
+            'quiet': True,
+            'socket_timeout': 15  # Add timeout to prevent freezing
+        }) as ydl:
             info = ydl.extract_info(url, download=False)
             
             if not info:
@@ -50,6 +54,10 @@ def download(url, download_path, max_duration_seconds=None, max_size_mb=None, al
             'progress_hooks': [utils.progress_hook],
             'ignoreerrors': False,
             'nooverwrites': True,
+            'socket_timeout': 30,    # Prevent freezing on network issues
+            'retries': 3,            # Retry a few times
+            'fragment_retries': 3,   # Retry fragment downloads
+            'extractor_retries': 3   # Retry extractor fetch
         }
         
         if max_duration_seconds or max_size_mb:
@@ -79,11 +87,35 @@ def download(url, download_path, max_duration_seconds=None, max_size_mb=None, al
             }
             
     except yt_dlp.utils.DownloadError as e:
-        if "premium" in str(e).lower() or "paywall" in str(e).lower() or "login" in str(e).lower():
-            print(f"Download error: Content is behind a paywall or requires login")
+        error_msg = str(e).lower()
+        
+        if "private" in error_msg:
+            print(f"Download error: This video is private")
+            raise yt_dlp.utils.DownloadError("This video is private")
+        elif any(term in error_msg for term in ["premium", "paywall", "subscribe", "login", "member", "paid"]):
+            print(f"Download error: This content requires a premium account or login")
+            raise yt_dlp.utils.DownloadError("This content requires a premium account or login")
+        elif any(term in error_msg for term in ["removed", "deleted", "taken down"]):
+            print(f"Download error: This video has been removed or deleted")
+            raise yt_dlp.utils.DownloadError("This video has been removed or deleted")
+        elif "unavailable" in error_msg:
+            print(f"Download error: This video is unavailable")
+            raise yt_dlp.utils.DownloadError("This video is unavailable")
+        elif "copyright" in error_msg:
+            print(f"Download error: This video is blocked due to copyright issues")
+            raise yt_dlp.utils.DownloadError("This video is blocked due to copyright issues")
+        elif "age" in error_msg and ("restrict" in error_msg or "verify" in error_msg):
+            print(f"Download error: This video is age-restricted")
+            raise yt_dlp.utils.DownloadError("This video is age-restricted")
+        elif ("geo" in error_msg and "block" in error_msg) or "country" in error_msg:
+            print(f"Download error: This video is not available in your country")
+            raise yt_dlp.utils.DownloadError("This video is not available in your country")
+        elif "not exist" in error_msg or "no longer" in error_msg or "not found" in error_msg:
+            print(f"Download error: This video does not exist or could not be found")
+            raise yt_dlp.utils.DownloadError("This video does not exist or could not be found")
         else:
             print(f"Download error: {e}")
-        return None
+            raise
     except Exception as e:
         print(f"Error downloading audio: {e}")
-        return None
+        raise
