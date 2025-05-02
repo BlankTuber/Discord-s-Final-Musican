@@ -3,12 +3,11 @@ import time
 import yt_dlp
 from ytdlp import utils
 
-def download(url, download_path, max_items=None, max_duration_seconds=None, max_size_mb=None, allow_live=False):
+def download(url, download_path, db, max_items=None, max_duration_seconds=None, max_size_mb=None, allow_live=False):
     platform = utils.get_platform(url)
     platform_prefix = utils.get_platform_prefix(platform)
     
     try:
-        # Use socket_timeout and extract_flat for faster extraction and to avoid freezing
         with yt_dlp.YoutubeDL({
             'skip_download': True, 
             'quiet': True, 
@@ -26,10 +25,13 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
             playlist_title = info.get('title', 'Unknown Playlist')
             playlist_id = info.get('id', '')
             
+            playlist_dir = f"{platform_prefix}_{playlist_id}"
+            playlist_path = os.path.join(download_path, playlist_dir)
+            os.makedirs(playlist_path, exist_ok=True)
+            
             results = []
             entries = list(info.get('entries', []))
             
-            # Filter out entries that are known to be unavailable
             filtered_entries = []
             for entry in entries:
                 if entry and entry.get('id') is not None:
@@ -51,40 +53,84 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
                     'items': []
                 }
             
+            # Check song count to warn if we're approaching limit, but don't delete anything
+            # Only janitor should delete files and DB entries
+            song_count = db.get_song_count()
+            if song_count + len(entries) > 500:
+                print(f"Warning: Adding {len(entries)} songs would exceed the limit of 500 (current count: {song_count}).")
+                print("The janitor will clean up old songs on its next run.")
+            
+            # Create playlist record in database ONLY if we successfully download at least one song
+            db_playlist_id = None
+            successful_downloads = 0
+            
             for i, entry in enumerate(entries):
                 if not entry or not entry.get('id'):
                     print(f"Skipping unavailable playlist item")
                     continue
                 
+                track_number = f"{i+1:02d}"
                 video_id = entry.get('id')
                 
-                # Use the same naming scheme as single audio downloads
-                filename = f"{platform_prefix}_{video_id}.mp3"
-                full_path = os.path.abspath(os.path.join(download_path, filename))
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
                 
-                if os.path.isfile(full_path):
-                    print(f"File already exists: {filename}")
+                # Check if song exists in database and file exists
+                song = db.get_song_by_url(video_url)
+                if song and os.path.exists(song['file_path']):
+                    print(f"Song already exists: {song['title']}")
+                    
+                    # Create playlist in database if not created yet
+                    if db_playlist_id is None:
+                        db_playlist = db.get_playlist_by_url(url)
+                        if db_playlist:
+                            db_playlist_id = db_playlist['id']
+                        else:
+                            db_playlist_id = db.add_playlist(
+                                title=playlist_title,
+                                url=url,
+                                platform=platform
+                            )
+                    
+                    # Add song to playlist if not already there
+                    position_result = db.query(
+                        "SELECT position FROM playlist_songs WHERE playlist_id = ? AND song_id = ?",
+                        (db_playlist_id, song['id'])
+                    )
+                    
+                    if not position_result:
+                        db.add_song_to_playlist(db_playlist_id, song['id'], i)
+                        print(f"Added existing song to playlist: {song['title']}")
+                    
+                    successful_downloads += 1
                     results.append({
-                        'title': entry.get('title', 'Unknown'),
-                        'filename': full_path,
-                        'duration': entry.get('duration'),
-                        'file_size': os.path.getsize(full_path),
-                        'platform': platform,
+                        'id': song['id'],
+                        'title': song['title'],
+                        'filename': song['file_path'],
+                        'duration': song['duration'],
+                        'file_size': song['file_size'],
+                        'platform': song['platform'],
                         'skipped': True
                     })
                     continue
                 
-                # Get full info for the specific video with timeout
+                filename = f"{track_number}_{platform_prefix}_{video_id}.mp3"
+                full_path = os.path.abspath(os.path.join(playlist_path, filename))
+                
+                if os.path.isfile(full_path):
+                    # File exists but not in database, will add it after checking info
+                    file_exists = True
+                    file_size = os.path.getsize(full_path)
+                else:
+                    file_exists = False
+                    file_size = None
+                
                 try:
                     with yt_dlp.YoutubeDL({
                         'skip_download': True, 
                         'quiet': True,
                         'socket_timeout': 15
                     }) as info_ydl:
-                        video_info = info_ydl.extract_info(
-                            f"https://www.youtube.com/watch?v={video_id}", 
-                            download=False
-                        )
+                        video_info = info_ydl.extract_info(video_url, download=False)
                         
                         if not video_info:
                             print(f"Skipping unavailable playlist item: {entry.get('title', 'Unknown')}")
@@ -151,107 +197,160 @@ def download(url, download_path, max_items=None, max_duration_seconds=None, max_
                     })
                     continue
                 
-                # Actual download with timeout
-                ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    # Use the same output template as single audio downloads
-                    'outtmpl': os.path.join(download_path, f"{platform_prefix}_%(id)s.%(ext)s"),
-                    'progress_hooks': [utils.progress_hook],
-                    'socket_timeout': 30,
-                    'ignoreerrors': True,  # Don't stop on download errors
-                    'retries': 3,          # Retry a few times
-                    'fragment_retries': 3, # Retry fragment downloads
-                    'extractor_retries': 3 # Retry extractor fetch
-                }
-                
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as item_ydl:
-                        print(f"Downloading playlist item {i+1}/{len(entries)}: {entry.get('title', 'Unknown')}")
-                        item_info = item_ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+                # If file exists, we can skip download
+                if file_exists:
+                    item_info = video_info
+                else:
+                    # Actually download the file
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3',
+                            'preferredquality': '192',
+                        }],
+                        'outtmpl': os.path.join(playlist_path, f"{track_number}_{platform_prefix}_%(id)s.%(ext)s"),
+                        'progress_hooks': [utils.progress_hook],
+                        'socket_timeout': 30,
+                        'ignoreerrors': True,
+                        'retries': 3,
+                        'fragment_retries': 3,
+                        'extractor_retries': 3
+                    }
+                    
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as item_ydl:
+                            print(f"Downloading playlist item {i+1}/{len(entries)}: {entry.get('title', 'Unknown')}")
+                            item_info = item_ydl.extract_info(video_url, download=True)
+                            
+                            if not item_info:
+                                print(f"Failed to download playlist item: {entry.get('title', 'Unknown')}")
+                                results.append({
+                                    'title': entry.get('title', 'Unknown'),
+                                    'filename': None,
+                                    'duration': None,
+                                    'file_size': None,
+                                    'platform': platform,
+                                    'skipped': True,
+                                    'error': "Download failed"
+                                })
+                                continue
+                            
+                            # Verify file exists after download
+                            file_exists = os.path.exists(full_path)
+                            if not file_exists:
+                                print(f"Download completed but file not found: {full_path}")
+                                results.append({
+                                    'title': item_info.get('title', 'Unknown'),
+                                    'filename': None,
+                                    'duration': None,
+                                    'file_size': None,
+                                    'platform': platform,
+                                    'skipped': True,
+                                    'error': "File not found after download"
+                                })
+                                continue
+                            
+                            file_size = os.path.getsize(full_path)
                         
-                        if not item_info:
-                            print(f"Failed to download playlist item: {entry.get('title', 'Unknown')}")
-                            results.append({
-                                'title': entry.get('title', 'Unknown'),
-                                'filename': None,
-                                'duration': None,
-                                'file_size': None,
-                                'platform': platform,
-                                'skipped': True,
-                                'error': "Download failed"
-                            })
-                            continue
+                    except yt_dlp.utils.DownloadError as e:
+                        error_msg = str(e).lower()
+                        error_message = "Error downloading playlist item"
                         
-                        filename = f"{platform_prefix}_{item_info['id']}.mp3"
-                        full_path = os.path.join(download_path, filename)
+                        if "private" in error_msg:
+                            error_message = "This video is private"
+                        elif any(term in error_msg for term in ["premium", "paywall", "subscribe", "login", "member", "paid"]):
+                            error_message = "This content requires a premium account or login"
+                        elif any(term in error_msg for term in ["removed", "deleted", "taken down"]):
+                            error_message = "This video has been removed or deleted"
+                        elif "unavailable" in error_msg:
+                            error_message = "This video is unavailable"
+                        elif "copyright" in error_msg:
+                            error_message = "This video is blocked due to copyright issues"
+                        elif "age" in error_msg and ("restrict" in error_msg or "verify" in error_msg):
+                            error_message = "This video is age-restricted"
+                        elif ("geo" in error_msg and "block" in error_msg) or "country" in error_msg:
+                            error_message = "This video is not available in your country"
+                        elif "not exist" in error_msg or "no longer" in error_msg or "not found" in error_msg:
+                            error_message = "This video does not exist or could not be found"
                         
-                        file_exists = os.path.exists(full_path)
-                        file_size = os.path.getsize(full_path) if file_exists else None
+                        print(f"Error downloading playlist item: {error_message}")
                         
                         results.append({
-                            'title': item_info.get('title', 'Unknown'),
-                            'filename': full_path,
-                            'duration': item_info.get('duration'),
-                            'file_size': file_size,
+                            'title': entry.get('title', 'Unknown'),
+                            'filename': None,
+                            'duration': None,
+                            'file_size': None,
                             'platform': platform,
-                            'skipped': False
+                            'skipped': True,
+                            'error': error_message
                         })
-                except yt_dlp.utils.DownloadError as e:
-                    error_msg = str(e).lower()
-                    error_message = "Error downloading playlist item"
-                    
-                    if "private" in error_msg:
-                        error_message = "This video is private"
-                    elif any(term in error_msg for term in ["premium", "paywall", "subscribe", "login", "member", "paid"]):
-                        error_message = "This content requires a premium account or login"
-                    elif any(term in error_msg for term in ["removed", "deleted", "taken down"]):
-                        error_message = "This video has been removed or deleted"
-                    elif "unavailable" in error_msg:
-                        error_message = "This video is unavailable"
-                    elif "copyright" in error_msg:
-                        error_message = "This video is blocked due to copyright issues"
-                    elif "age" in error_msg and ("restrict" in error_msg or "verify" in error_msg):
-                        error_message = "This video is age-restricted"
-                    elif ("geo" in error_msg and "block" in error_msg) or "country" in error_msg:
-                        error_message = "This video is not available in your country"
-                    elif "not exist" in error_msg or "no longer" in error_msg or "not found" in error_msg:
-                        error_message = "This video does not exist or could not be found"
-                    
-                    print(f"Error downloading playlist item: {error_message}")
-                    
-                    results.append({
-                        'title': entry.get('title', 'Unknown'),
-                        'filename': None,
-                        'duration': None,
-                        'file_size': None,
-                        'platform': platform,
-                        'skipped': True,
-                        'error': error_message
-                    })
-                except Exception as e:
-                    print(f"Error downloading playlist item: {e}")
-                    
-                    results.append({
-                        'title': entry.get('title', 'Unknown'),
-                        'filename': None,
-                        'duration': None,
-                        'file_size': None,
-                        'platform': platform,
-                        'skipped': True,
-                        'error': str(e)
-                    })
+                        continue
+                    except Exception as e:
+                        print(f"Error downloading playlist item: {e}")
+                        
+                        results.append({
+                            'title': entry.get('title', 'Unknown'),
+                            'filename': None,
+                            'duration': None,
+                            'file_size': None,
+                            'platform': platform,
+                            'skipped': True,
+                            'error': str(e)
+                        })
+                        continue
+                
+                # Create playlist in database if this is the first successful download
+                if db_playlist_id is None:
+                    db_playlist = db.get_playlist_by_url(url)
+                    if db_playlist:
+                        db_playlist_id = db_playlist['id']
+                    else:
+                        db_playlist_id = db.add_playlist(
+                            title=playlist_title,
+                            url=url,
+                            platform=platform
+                        )
+                
+                # At this point, the file is either already there or we've downloaded it successfully
+                thumbnail = item_info.get('thumbnail', '')
+                if isinstance(thumbnail, dict) and 'url' in thumbnail:
+                    thumbnail = thumbnail['url']
+                
+                artist = item_info.get('artist', item_info.get('uploader', item_info.get('channel', 'Unknown')))
+                
+                # Now add to database
+                song_id = db.add_song(
+                    title=item_info.get('title', 'Unknown'),
+                    url=video_url,
+                    platform=platform,
+                    file_path=full_path,
+                    duration=item_info.get('duration'),
+                    file_size=file_size,
+                    thumbnail_url=thumbnail,
+                    artist=artist,
+                    is_stream=item_info.get('is_live', False)
+                )
+                
+                db.add_song_to_playlist(db_playlist_id, song_id, i)
+                successful_downloads += 1
+                
+                results.append({
+                    'id': song_id,
+                    'title': item_info.get('title', 'Unknown'),
+                    'filename': full_path,
+                    'duration': item_info.get('duration'),
+                    'file_size': file_size,
+                    'platform': platform,
+                    'skipped': False
+                })
             
             return {
                 'playlist_title': playlist_title,
                 'playlist_url': url,
                 'count': len(results),
                 'items': results,
-                'successful_downloads': sum(1 for item in results if not item.get('skipped', True))
+                'successful_downloads': successful_downloads
             }
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e).lower()

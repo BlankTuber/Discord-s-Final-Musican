@@ -113,7 +113,7 @@ def handle_search(params, config):
     if not results:
         return {"results": []}
         
-    return {"results": results}
+    return results
 
 def handle_ping(params, config):
     return {

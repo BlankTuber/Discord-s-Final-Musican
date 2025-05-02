@@ -11,7 +11,7 @@ import struct
 import uuid
 import time
 import pprint
-from datetime import datetime, timezone, UTC  # Import UTC for timezone
+from datetime import datetime, timezone, UTC
 
 # Check for rich library, use fallback if not available
 try:
@@ -102,7 +102,7 @@ def send_message(socket_path, command, request_id=None, params=None):
     message = {
         "command": command,
         "id": request_id,
-        "timestamp": datetime.now(UTC).isoformat()  # Using UTC timezone
+        "timestamp": datetime.now(UTC).isoformat()
     }
     
     if params:
@@ -238,26 +238,41 @@ def display_download_result(result):
         print_color("Download failed.", "red", "bold")
         return
     
-    # Handle different result formats
+    # Handle the new simplified response format
+    if isinstance(result, dict) and "status" in result:
+        if result["status"] == "success":
+            print_color("✅ Download successful!", "green", "bold")
+            if "message" in result:
+                print_color(f"Message: {result['message']}", "cyan")
+        else:
+            print_color(f"❌ Download failed: {result.get('message', 'Unknown error')}", "red", "bold")
+        return
+    
+    # For backward compatibility with old response format
     if isinstance(result, str):
         print_color(f"Unexpected result format: {result}", "red", "bold")
         return
     
-    print_color("Download successful!", "green", "bold")
-    print_color(f"Title: {result.get('title', 'Unknown')}", "cyan", "bold")
-    print_color(f"Duration: {format_duration(result.get('duration'))}", "cyan", "bold")
-    print_color(f"File: {result.get('filename', 'Unknown')}", "cyan", "bold")
+    print_color("Download requested successfully!", "green", "bold")
+    
+    if "title" in result:
+        print_color(f"Title: {result.get('title', 'Unknown')}", "cyan", "bold")
+    if "duration" in result:
+        print_color(f"Duration: {format_duration(result.get('duration'))}", "cyan", "bold")
+    if "filename" in result:
+        print_color(f"File: {result.get('filename', 'Unknown')}", "cyan", "bold")
     
     file_size = result.get('file_size')
     if file_size:
         print_color(f"Size: {file_size / (1024*1024):.2f} MB", "cyan", "bold")
-    else:
-        print_color("Size: Unknown", "cyan", "bold")
-        
-    print_color(f"Platform: {result.get('platform', 'Unknown')}", "cyan", "bold")
+    
+    if "platform" in result:
+        print_color(f"Platform: {result.get('platform', 'Unknown')}", "cyan", "bold")
     
     if result.get('skipped'):
         print_color("Note: File was already downloaded.", "yellow")
+    
+    print_color("The song has been added to the database and will be available for playback.", "green")
 
 def display_playlist_result(result):
     """Display playlist download results."""
@@ -265,45 +280,60 @@ def display_playlist_result(result):
         print_color("Playlist download failed.", "red", "bold")
         return
     
-    # Handle different result formats
+    # Handle the new simplified response format
+    if isinstance(result, dict) and "status" in result:
+        if result["status"] == "success":
+            print_color("✅ Playlist download successful!", "green", "bold")
+            if "count" in result:
+                print_color(f"Successfully downloaded {result['count']} songs", "cyan")
+            if "message" in result:
+                print_color(f"Message: {result['message']}", "cyan")
+        else:
+            print_color(f"❌ Playlist download failed: {result.get('message', 'Unknown error')}", "red", "bold")
+        return
+    
+    # For backward compatibility with old response format
     if isinstance(result, str):
         print_color(f"Unexpected result format: {result}", "red", "bold")
         return
     
     print_color("Playlist download successful!", "green", "bold")
-    print_color(f"Title: {result.get('playlist_title', 'Unknown')}", "cyan", "bold")
-    print_color(f"URL: {result.get('playlist_url', 'Unknown')}", "cyan", "bold")
-    print_color(f"Items downloaded: {result.get('count', 0)}", "cyan", "bold")
+    
+    if "playlist_title" in result:
+        print_color(f"Title: {result.get('playlist_title', 'Unknown')}", "cyan", "bold")
+    if "playlist_url" in result:
+        print_color(f"URL: {result.get('playlist_url', 'Unknown')}", "cyan", "bold")
+    if "count" in result:
+        print_color(f"Items downloaded: {result.get('count', 0)}", "cyan", "bold")
     
     items = result.get('items', [])
-    if items:
+    successful = sum(1 for item in items if not item.get('skipped', True))
+    
+    print_color(f"Successfully downloaded {successful} new songs. All songs have been added to the database.", "green")
+    
+    if items and confirm("Show detailed download results?", default=False):
         if RICH_AVAILABLE:
             table = Table(show_header=True, header_style="bold magenta")
             table.add_column("#", style="dim", width=4)
             table.add_column("Title", style="cyan")
-            table.add_column("Duration", style="green", justify="right")
-            table.add_column("Size (MB)", style="blue", justify="right")
             table.add_column("Status", style="yellow")
+            table.add_column("Error", style="red")
             
             for i, item in enumerate(items, 1):
-                size_mb = "N/A"
-                if item.get('file_size'):
-                    size_mb = f"{item.get('file_size') / (1024*1024):.2f}"
-                    
-                status = "[yellow]Skipped[/]" if item.get('skipped') else "[green]Downloaded[/]"
+                status = "[green]Success[/]" if not item.get('skipped') else "[yellow]Skipped[/]"
+                error = item.get('error', '')
                 
                 table.add_row(
                     str(i),
                     item.get('title', 'Unknown'),
-                    format_duration(item.get('duration')),
-                    size_mb,
-                    status
+                    status,
+                    error
                 )
             
             console.print(table)
         else:
             print("-" * 80)
-            print(f"{'#':<4} {'Title':<40} {'Duration':<10} {'Size (MB)':<12} {'Status':<10}")
+            print(f"{'#':<4} {'Title':<40} {'Status':<10} {'Error':<20}")
             print("-" * 80)
             
             for i, item in enumerate(items, 1):
@@ -311,13 +341,10 @@ def display_playlist_result(result):
                 if len(title) > 40:
                     title = title[:37] + "..."
                     
-                size_mb = "N/A"
-                if item.get('file_size'):
-                    size_mb = f"{item.get('file_size') / (1024*1024):.2f}"
+                status = "Success" if not item.get('skipped') else "Skipped"
+                error = item.get('error', '')
                     
-                status = "Skipped" if item.get('skipped') else "Downloaded"
-                    
-                print(f"{i:<4} {title:<40} {format_duration(item.get('duration')):<10} {size_mb:<12} {status:<10}")
+                print(f"{i:<4} {title:<40} {status:<10} {error:<20}")
             
             print("-" * 80)
 
@@ -370,34 +397,18 @@ def search_command(args, socket_path):
         print_color(f"Unexpected response format: {response}", "red", "bold")
         return
     
-    if response.get("status") != "success":
-        error = response.get("error", "Unknown error")
+    if response.get("status") == "error":
+        error = response.get("message", "Unknown error")
         print_color(f"Search failed: {error}", "red", "bold")
         return
     
-    # Handle the nested results structure
-    data = response.get("data", {})
-    if isinstance(data, str):
-        print_color(f"Unexpected data format: {data}", "red", "bold")
-        return
+    # Handle different result formats
+    results = []
     
-    # Check if we have the double-nested results structure
-    results = None
-    
-    if "results" in data:
-        results_data = data.get("results")
-        if isinstance(results_data, dict) and "results" in results_data:
-            # Double-nested structure: data.results.results[]
-            results = results_data.get("results", [])
-        elif isinstance(results_data, list):
-            # Single-nested structure: data.results[]
-            results = results_data
-    
-    # Fallback if we can't find the results
-    if results is None:
-        print_color("Could not find results in the response. Response structure:", "red", "bold")
-        print_color(json.dumps(data, indent=2), "yellow")
-        return
+    if "data" in response and "results" in response["data"]:
+        results = response["data"]["results"]
+    elif "results" in response:
+        results = response["results"]
     
     if not results:
         print_color("No results found.", "yellow")
@@ -447,12 +458,7 @@ def search_command(args, socket_path):
             print_color(f"Unexpected response format: {download_response}", "red", "bold")
             return
         
-        if download_response.get("status") != "success":
-            error = download_response.get("error", "Unknown error")
-            print_color(f"Download failed: {error}", "red", "bold")
-            return
-        
-        display_download_result(download_response.get("data"))
+        display_download_result(download_response.get("data") if "data" in download_response else download_response)
 
 def download_command(args, socket_path):
     """Handle download command."""
@@ -504,13 +510,8 @@ def download_command(args, socket_path):
     if isinstance(response, str):
         print_color(f"Unexpected response format: {response}", "red", "bold")
         return
-        
-    if response.get("status") != "success":
-        error = response.get("error", "Unknown error")
-        print_color(f"Download failed: {error}", "red", "bold")
-        return
     
-    display_download_result(response.get("data"))
+    display_download_result(response.get("data") if "data" in response else response)
 
 def playlist_command(args, socket_path):
     """Handle playlist download command."""
@@ -572,17 +573,12 @@ def playlist_command(args, socket_path):
     if isinstance(response, str):
         print_color(f"Unexpected response format: {response}", "red", "bold")
         return
-        
-    if response.get("status") != "success":
-        error = response.get("error", "Unknown error")
-        print_color(f"Download failed: {error}", "red", "bold")
-        return
     
-    display_playlist_result(response.get("data"))
+    display_playlist_result(response.get("data") if "data" in response else response)
 
 def ping_command(socket_path):
     """Send a ping command to check if the service is responsive."""
-    timestamp = datetime.now(UTC).isoformat()  # Using UTC timezone
+    timestamp = datetime.now(UTC).isoformat()
     
     params = {
         "timestamp": timestamp

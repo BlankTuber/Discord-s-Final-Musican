@@ -21,10 +21,21 @@ def load_config():
         print(f"Config error, using defaults: {e}")
     
     config["download_path"] = os.path.abspath(os.path.expanduser(config["download_path"]))
+    # Fix: Use the download path directly instead of its parent directory
+    config["db_path"] = os.path.join(config["download_path"], "musicbot.db")
+    
     os.makedirs(config["download_path"], exist_ok=True)
     print(f"Download directory ready: {config['download_path']}")
+    print(f"Database path: {config['db_path']}")
     
     return config
+
+def ensure_database_exists(db_path):
+    if not os.path.exists(db_path):
+        print(f"Warning: Database file not found at: {db_path}")
+        print("Please run the database initializer before starting the downloader")
+        return False
+    return True
 
 def main():
     config = load_config()
@@ -32,6 +43,9 @@ def main():
     print(f"Downloading files to: {config['download_path']}")
     print(f"Using socket at: {config['uds_link']}")
     print(f"Allowed origins: {config['allowed_origins']}")
+    
+    if not ensure_database_exists(config["db_path"]):
+        print("Database not found, but continuing with service startup")
     
     ytdlp_handler.initialize(config)
     uds_handler.initialize(config)
