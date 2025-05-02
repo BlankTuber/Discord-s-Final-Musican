@@ -168,18 +168,41 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 	
-	err = client.JoinVoiceChannel(i.GuildID, channelID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
-		})
-		return
+	// Check if user is in the default idle VC
+	client.mu.RLock()
+	isInIdleVC := (channelID == client.defaultVCID && i.GuildID == client.defaultGuildID)
+	client.mu.RUnlock()
+	
+	// Only set default VC if we're in the idle VC
+	if isInIdleVC {
+		// Enable idle mode when radio is started in the default channel
+		client.EnableIdleMode()
+	} else {
+		// When starting radio in a non-default channel, disable idle mode
+		client.DisableIdleMode()
 	}
 	
-	client.SetDefaultVoiceChannel(i.GuildID, channelID)
+	// Check if already connected to the right channel
+	currentVC := false
+	client.mu.RLock()
+	if vc, ok := client.voiceConnections[i.GuildID]; ok && vc != nil && vc.ChannelID == channelID {
+		currentVC = true
+	}
+	client.mu.RUnlock()
+	
+	// Only join if not already in the right channel
+	if !currentVC {
+		err = client.JoinVoiceChannel(i.GuildID, channelID)
+		if err != nil {
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
+			})
+			return
+		}
+	}
 	
 	client.mu.Lock()
-	client.isInIdleMode = true
+	client.isInIdleMode = isInIdleVC
 	streamer := client.radioStreamer
 	client.mu.Unlock()
 	
@@ -187,9 +210,15 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 	
 	s.UpdateGameStatus(0, "Radio Mode | Use /help")
 	
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr("✅ Radio mode started!"),
-	})
+	if isInIdleVC {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("✅ Idle radio mode started in default channel!"),
+		})
+	} else {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("✅ Radio started in current channel! (Not in idle mode)"),
+		})
+	}
 }
 
 type RadioStopCommand struct{}
@@ -224,12 +253,15 @@ func (c *RadioStopCommand) Execute(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 	
+	// Disable idle mode when radio is manually stopped
+	client.DisableIdleMode()
+	
 	streamer.Stop()
 	
 	s.UpdateGameStatus(0, "/play to add music")
 	
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr("✅ Radio stream stopped."),
+		Content: stringPtr("✅ Radio stream stopped. Idle mode will resume automatically when everyone leaves the channel."),
 	})
 }
 

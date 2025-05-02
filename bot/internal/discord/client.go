@@ -3,6 +3,8 @@ package discord
 import (
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -45,6 +47,7 @@ type Client struct {
 	lastActivityTime time.Time
 	idleCheckTicker  *time.Ticker
 	isInIdleMode     bool
+	idleModeDisabled bool
 	
 	stopChan         chan bool
 }
@@ -71,6 +74,7 @@ func NewClient(config ClientConfig) (*Client, error) {
 		idleTimeout:      config.IdleTimeout,
 		lastActivityTime: time.Now(),
 		isInIdleMode:     false,
+		idleModeDisabled: false,
 		stopChan:         make(chan bool),
 	}
 	
@@ -132,7 +136,6 @@ func (c *Client) StartActivity() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
-	// Only update the activity timestamp, don't stop radio
 	c.lastActivityTime = time.Now()
 }
 
@@ -249,6 +252,7 @@ func (c *Client) checkChannelEmpty(guildID, channelID string) bool {
 
 func (c *Client) startIdleMode() {
 	c.mu.Lock()
+	
 	if c.isInIdleMode {
 		c.mu.Unlock()
 		return
@@ -260,22 +264,43 @@ func (c *Client) startIdleMode() {
 		return
 	}
 	
+	if c.idleModeDisabled {
+		logger.InfoLogger.Println("Idle mode is currently disabled")
+		c.mu.Unlock()
+		return
+	}
+	
 	c.isInIdleMode = true
 	defaultGuildID := c.defaultGuildID
 	defaultVCID := c.defaultVCID
+	
+	// Check if already connected to the default channel
+	alreadyConnected := false
+	if vc, ok := c.voiceConnections[defaultGuildID]; ok && vc != nil && vc.ChannelID == defaultVCID {
+		alreadyConnected = true
+	}
+	
 	c.mu.Unlock()
 	
 	logger.InfoLogger.Println("Entering idle mode")
 	
-	err := c.JoinVoiceChannel(defaultGuildID, defaultVCID)
-	if err != nil {
-		logger.ErrorLogger.Printf("Failed to join default voice channel: %v", err)
-		
-		c.mu.Lock()
-		c.isInIdleMode = false
-		c.mu.Unlock()
-		return
+	// Only join if not already connected to the right channel
+	if !alreadyConnected {
+		err := c.JoinVoiceChannel(defaultGuildID, defaultVCID)
+		if err != nil {
+			logger.ErrorLogger.Printf("Failed to join default voice channel: %v", err)
+			
+			c.mu.Lock()
+			c.isInIdleMode = false
+			c.mu.Unlock()
+			return
+		}
+	} else {
+		logger.InfoLogger.Println("Already in the default voice channel, staying connected")
 	}
+	
+	// Invoke the janitor as a separate process
+	go c.runJanitor()
 	
 	c.radioStreamer.Start()
 	
@@ -302,6 +327,9 @@ func (c *Client) checkIdleState() {
 	lastActivity := c.lastActivityTime
 	isInIdleMode := c.isInIdleMode
 	idleTimeout := c.idleTimeout
+	idleModeDisabled := c.idleModeDisabled
+	defaultGuildID := c.defaultGuildID
+	defaultVCID := c.defaultVCID
 	c.mu.RUnlock()
 	
 	if isInIdleMode {
@@ -310,19 +338,91 @@ func (c *Client) checkIdleState() {
 	
 	timeSinceActivity := time.Since(lastActivity)
 	
-	if timeSinceActivity.Seconds() > float64(idleTimeout) {
+	// Check if we're in any voice channel
+	if vc, ok := c.GetCurrentVoiceConnection(); ok && vc != nil {
+		// Always check if current channel is empty, regardless of idle timeout
+		if c.checkChannelEmpty(vc.GuildID, vc.ChannelID) {
+			logger.InfoLogger.Println("Voice channel is empty, checking if we should enter idle mode")
+			
+			// If we're already in the idle channel, just enable idle mode
+			if vc.GuildID == defaultGuildID && vc.ChannelID == defaultVCID {
+				logger.InfoLogger.Println("Already in the idle channel, enabling idle mode")
+				c.mu.Lock()
+				c.idleModeDisabled = false
+				c.mu.Unlock()
+				c.startIdleMode()
+			} else if !idleModeDisabled {
+				// If we're in a different channel and idle mode isn't disabled,
+				// disconnect and move to idle channel
+				logger.InfoLogger.Println("In non-idle channel that's empty, moving to idle channel")
+				
+				// Reset idle mode disabled flag
+				c.mu.Lock()
+				c.idleModeDisabled = false
+				c.mu.Unlock()
+				
+				// Disconnect from current channel
+				vc.Disconnect()
+				
+				// Schedule idle mode reconnect with a slight delay
+				go func() {
+					time.Sleep(2 * time.Second)
+					c.startIdleMode()
+				}()
+			}
+			return
+		}
+	}
+	
+	// Regular timeout check
+	if timeSinceActivity.Seconds() > float64(idleTimeout) && !idleModeDisabled {
 		logger.InfoLogger.Printf("Bot idle for %v seconds, entering radio mode", int(timeSinceActivity.Seconds()))
 		c.startIdleMode()
 		return
 	}
+}
+
+func (c *Client) EnableIdleMode() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	
-	if vc, ok := c.GetCurrentVoiceConnection(); ok && vc != nil {
-		if c.checkChannelEmpty(vc.GuildID, vc.ChannelID) {
-			logger.InfoLogger.Println("Voice channel is empty, entering radio mode")
-			c.startIdleMode()
-			return
-		}
+	c.idleModeDisabled = false
+	logger.InfoLogger.Println("Idle mode enabled")
+}
+
+func (c *Client) DisableIdleMode() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	c.idleModeDisabled = true
+	logger.InfoLogger.Println("Idle mode disabled")
+}
+
+func (c *Client) runJanitor() {
+	logger.InfoLogger.Println("Running janitor to clean up old files")
+	
+	// Path to the janitor binary
+	janitorPath := "../janitor/janitor"
+	
+	// Check if janitor binary exists
+	if _, err := os.Stat(janitorPath); os.IsNotExist(err) {
+		logger.WarnLogger.Printf("Janitor binary not found at %s", janitorPath)
+		logger.WarnLogger.Println("To compile janitor: cd ../janitor && gcc janitor.c -o janitor -lsqlite3")
+		return
 	}
+	
+	// Execute the janitor binary with appropriate paths
+	cmd := exec.Command(janitorPath, "../shared/musicbot.db", "../shared")
+	
+	// Capture output for logging
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logger.ErrorLogger.Printf("Failed to run janitor: %v", err)
+		logger.ErrorLogger.Printf("Janitor output: %s", string(output))
+		return
+	}
+	
+	logger.InfoLogger.Printf("Janitor completed successfully: %s", string(output))
 }
 
 func (c *Client) handleReady(s *discordgo.Session, r *discordgo.Ready) {
@@ -333,6 +433,7 @@ func (c *Client) handleReady(s *discordgo.Session, r *discordgo.Ready) {
 }
 
 func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
+	// Bot was disconnected from voice
 	if v.UserID == s.State.User.ID && v.ChannelID == "" {
 		c.mu.Lock()
 		if _, ok := c.voiceConnections[v.GuildID]; ok {
@@ -345,25 +446,129 @@ func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.Voice
 				c.radioStreamer.Stop()
 			}
 		}
+		
+		// Reset idle mode disabled when bot is disconnected
+		wasDisabled := c.idleModeDisabled
+		c.idleModeDisabled = false
 		c.mu.Unlock()
+		
+		// If bot was disconnected externally, immediately go back to idle mode
+		if wasDisabled {
+			logger.InfoLogger.Println("Bot was disconnected and idle mode was disabled, re-enabling idle mode")
+		}
+		
+		// Schedule idle mode reconnect with a slight delay to ensure clean disconnect
+		go func() {
+			time.Sleep(2 * time.Second)
+			c.startIdleMode()
+		}()
+		
 		return
 	}
 	
-	c.mu.RLock()
-	for guildID, vc := range c.voiceConnections {
-		if vc != nil && vc.ChannelID == v.ChannelID && v.ChannelID != "" && v.UserID != s.State.User.ID {
-			if c.checkChannelEmpty(guildID, vc.ChannelID) {
-				logger.InfoLogger.Println("All users left voice channel, checking if we should enter idle mode")
+	// Bot was moved to a different voice channel
+	if v.UserID == s.State.User.ID && v.ChannelID != "" {
+		c.mu.Lock()
+		storedVC, exists := c.voiceConnections[v.GuildID]
+		
+		// Update our internal tracking of the voice connection
+		if exists && storedVC != nil && storedVC.ChannelID != v.ChannelID {
+			logger.InfoLogger.Printf("Bot was moved from channel %s to channel %s", 
+				storedVC.ChannelID, v.ChannelID)
+			
+			// Update our internal tracking
+			c.voiceConnections[v.GuildID] = nil // Will be refreshed on next check
+			
+			// Check if moved to idle channel
+			isInIdleChannel := (v.ChannelID == c.defaultVCID && v.GuildID == c.defaultGuildID)
+			wasInIdleMode := c.isInIdleMode
+			
+			if isInIdleChannel {
+				// If moved to idle channel, enable idle mode
+				c.isInIdleMode = true
+				c.idleModeDisabled = false
+				logger.InfoLogger.Println("Bot was moved to idle channel, enabling idle mode")
+			} else if wasInIdleMode {
+				// If was in idle mode but moved elsewhere, disable idle mode
+				c.isInIdleMode = false
+				c.idleModeDisabled = true
+				logger.InfoLogger.Println("Bot was moved out of idle channel, disabling idle mode")
+			}
+			
+			// Restart radio streamer to adapt to the new channel
+			streamer := c.radioStreamer
+			c.mu.Unlock()
+			
+			if !wasInIdleMode && isInIdleChannel {
+				// If entering idle mode, start radio
+				go streamer.Start()
+			} else if wasInIdleMode && !isInIdleChannel {
+				// If leaving idle mode, stop radio
+				streamer.Stop()
+			}
+			
+			return
+		}
+		c.mu.Unlock()
+	}
+	
+	// Any user (not the bot) left or joined a voice channel
+	if v.UserID != s.State.User.ID {
+		// Check all voice connections where the bot is present
+		c.mu.RLock()
+		var botsVC *discordgo.VoiceConnection
+		var botsGuildID string
+		
+		// Find any voice channel where the bot is present
+		for guildID, vc := range c.voiceConnections {
+			if vc != nil {
+				// Store reference to bot's current VC
+				botsVC = vc
+				botsGuildID = guildID
+				break
+			}
+		}
+		
+		// Get default idle channel info
+		defaultGuildID := c.defaultGuildID
+		defaultVCID := c.defaultVCID
+		idleModeDisabled := c.idleModeDisabled
+		c.mu.RUnlock()
+		
+		// If bot is in a voice channel
+		if botsVC != nil {
+			// Check if the channel is now empty (with delay for state updates)
+			go func() {
+				time.Sleep(1 * time.Second)
 				
-				go func() {
-					time.Sleep(1 * time.Second)
-					if c.checkChannelEmpty(guildID, vc.ChannelID) {
+				// Check if bot is alone in its current channel
+				isEmpty := c.checkChannelEmpty(botsGuildID, botsVC.ChannelID)
+				
+				if isEmpty {
+					logger.InfoLogger.Println("Bot is alone in voice channel, moving to idle channel")
+					
+					// If bot is alone in ANY channel that's not the idle channel, move to the idle channel
+					if botsVC.ChannelID != defaultVCID || botsGuildID != defaultGuildID {
+						// Leave current channel
+						botsVC.Disconnect()
+						
+						// Reset disabled flag and enter idle mode
+						c.mu.Lock()
+						c.idleModeDisabled = false
+						c.mu.Unlock()
+						
+						// Start idle mode (which will connect to the default channel)
+						c.startIdleMode()
+					} else if idleModeDisabled {
+						// If already in the idle channel but idle mode is disabled, enable it
+						c.mu.Lock()
+						c.idleModeDisabled = false
+						c.mu.Unlock()
+						
 						c.startIdleMode()
 					}
-				}()
-			}
-			break
+				}
+			}()
 		}
 	}
-	c.mu.RUnlock()
 }
