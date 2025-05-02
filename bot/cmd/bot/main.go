@@ -35,6 +35,7 @@ func main() {
 		DefaultVCID:    cfg.DEFAULT_VC_ID,
 		RadioURL:       cfg.RADIO_URL,
 		IdleTimeout:    cfg.IDLE_TIMEOUT,
+		UDSPath:        cfg.UDS_PATH,
 	})
 
 	if err != nil {

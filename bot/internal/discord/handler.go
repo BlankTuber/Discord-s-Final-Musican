@@ -20,6 +20,7 @@ func (c *Client) setupCommandSystem() {
 func (c *Client) registerAllCommands() {
 	registerPingCommand(c.commands)
 	registerRadioCommands(c.commands)
+	registerMusicCommands(c.commands)
 	
 	logger.InfoLogger.Printf("Registered %d commands", len(c.commands.GetAllCommands()))
 }

@@ -4,6 +4,7 @@ go 1.24.1
 
 require (
 	github.com/bwmarrin/discordgo v0.28.1
+	github.com/mattn/go-sqlite3 v1.14.28
 	layeh.com/gopus v0.0.0-20210501142526-1ee02d434e32
 )
 

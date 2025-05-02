@@ -16,6 +16,7 @@ type Config struct {
 	DEFAULT_VC_ID    string `json:"default_vc_id"`
 	RADIO_URL        string `json:"radio_url"`
 	IDLE_TIMEOUT     int    `json:"idle_timeout"`
+	UDS_PATH         string `json:"uds_path"`
 }
 
 func Load(configPath string) (Config, error) {
@@ -49,6 +50,10 @@ func Load(configPath string) (Config, error) {
 	
 	if config.IDLE_TIMEOUT == 0 {
 		config.IDLE_TIMEOUT = 30
+	}
+	
+	if config.UDS_PATH == "" {
+		config.UDS_PATH = "/tmp/downloader.sock"
 	}
 	
 	return config, nil
