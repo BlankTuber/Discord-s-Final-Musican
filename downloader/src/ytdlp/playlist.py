@@ -25,9 +25,8 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
             playlist_title = info.get('title', 'Unknown Playlist')
             playlist_id = info.get('id', '')
             
-            playlist_dir = f"{platform_prefix}_{playlist_id}"
-            playlist_path = os.path.join(download_path, playlist_dir)
-            os.makedirs(playlist_path, exist_ok=True)
+            # No longer creating a specific playlist directory
+            # Simply use the main download path for all files
             
             results = []
             entries = list(info.get('entries', []))
@@ -69,7 +68,6 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                     print(f"Skipping unavailable playlist item")
                     continue
                 
-                track_number = f"{i+1:02d}"
                 video_id = entry.get('id')
                 
                 video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -113,8 +111,9 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                     })
                     continue
                 
-                filename = f"{track_number}_{platform_prefix}_{video_id}.mp3"
-                full_path = os.path.abspath(os.path.join(playlist_path, filename))
+                # Use the same filename format as individual downloads
+                filename = f"{platform_prefix}_{video_id}.mp3"
+                full_path = os.path.abspath(os.path.join(download_path, filename))
                 
                 if os.path.isfile(full_path):
                     # File exists but not in database, will add it after checking info
@@ -209,7 +208,8 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                             'preferredcodec': 'mp3',
                             'preferredquality': '192',
                         }],
-                        'outtmpl': os.path.join(playlist_path, f"{track_number}_{platform_prefix}_%(id)s.%(ext)s"),
+                        # Use the same format as individual downloads
+                        'outtmpl': os.path.join(download_path, f"{platform_prefix}_%(id)s.%(ext)s"),
                         'progress_hooks': [utils.progress_hook],
                         'socket_timeout': 30,
                         'ignoreerrors': True,
