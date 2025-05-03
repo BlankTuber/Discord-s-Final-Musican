@@ -36,7 +36,7 @@ type Response struct {
 func NewClient(socketPath string) *Client {
 	return &Client{
 		socketPath: socketPath,
-		timeout:    60 * time.Second, // Increased from 30 to 60 seconds
+		timeout:    120 * time.Second,
 	}
 }
 

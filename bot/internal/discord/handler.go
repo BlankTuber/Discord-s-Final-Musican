@@ -29,6 +29,21 @@ func (c *Client) handleInteraction(s *discordgo.Session, i *discordgo.Interactio
 	if i.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
+
+	if !c.IsCommandsEnabled() {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Bot is shutting down, commands are temporarily disabled.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	if i.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
 	
 	cmdName := i.ApplicationCommandData().Name
 	

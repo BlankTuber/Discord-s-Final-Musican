@@ -58,11 +58,25 @@ type Client struct {
 	udsClient        *uds.Client
 	dbManager        *database.Manager
 	
-	// New fields for component handling
 	searchResultsCache map[string][]*audio.Track
 	componentHandlers  map[string]func(*discordgo.Session, *discordgo.InteractionCreate)
 	
 	stopChan         chan bool
+
+	commandsEnabled bool
+	commandsMutex  sync.RWMutex
+}
+
+func (c *Client) DisableCommands() {
+	c.commandsMutex.Lock()
+	defer c.commandsMutex.Unlock()
+	c.commandsEnabled = false
+}
+
+func (c *Client) IsCommandsEnabled() bool {
+	c.commandsMutex.RLock()
+	defer c.commandsMutex.RUnlock()
+	return c.commandsEnabled
 }
 
 func NewClient(config ClientConfig) (*Client, error) {
