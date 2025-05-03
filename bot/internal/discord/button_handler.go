@@ -139,9 +139,8 @@ func (c *Client) HandleSearchButton(s *discordgo.Session, i *discordgo.Interacti
 	})
 	
 	// Disable the buttons on the original message
-	s.MessageEdit(i.ChannelID, i.Message.ID, &discordgo.MessageEdit{
-		Components: []discordgo.MessageComponent{}, // Remove all components
-	})
+	s.ChannelMessageEditComplex(discordgo.NewMessageEdit(i.ChannelID, i.Message.ID).
+    SetComponents())
 }
 
 // Initialization function to add search results cache

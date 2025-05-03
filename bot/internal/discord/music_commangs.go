@@ -322,7 +322,7 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 		
 		// Each button in its own row for better spacing
 		components = append(components, discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{button},
+			Components: &[]discordgo.MessageComponent{button},
 		})
 	}
 	

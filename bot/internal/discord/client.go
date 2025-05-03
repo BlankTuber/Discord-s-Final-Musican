@@ -157,6 +157,7 @@ func (c *Client) Connect() error {
 	}
 	
 	c.startIdleChecker()
+	c.CleanupSearchCache() // Start the search cache cleanup
 	
 	go c.startIdleMode()
 	

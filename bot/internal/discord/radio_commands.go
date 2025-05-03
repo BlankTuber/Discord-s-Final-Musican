@@ -35,73 +35,26 @@ func (c *SetDefaultVCCommand) Options() []*discordgo.ApplicationCommandOption {
 	}
 }
 
-func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
-	
-	channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ You need to be in a voice channel to use this command."),
-		})
-		return
-	}
-	
-	// Check if user is in the default idle VC
-	client.mu.RLock()
-	isInIdleVC := (channelID == client.defaultVCID && i.GuildID == client.defaultGuildID)
-	client.mu.RUnlock()
-	
-	// Only set default VC if we're in the idle VC
-	if isInIdleVC {
-		// Enable idle mode when radio is started in the default channel
-		client.EnableIdleMode()
-	} else {
-		// When starting radio in a non-default channel, disable idle mode
-		client.DisableIdleMode()
-	}
-	
-	// Stop any currently playing audio
-	client.StopAllPlayback()
-	
-	// Check if already connected to the right channel
-	currentVC := false
-	client.mu.RLock()
-	if vc, ok := client.voiceConnections[i.GuildID]; ok && vc != nil && vc.ChannelID == channelID {
-		currentVC = true
-	}
-	client.mu.RUnlock()
-	
-	// Only join if not already in the right channel
-	if !currentVC {
-		err = client.JoinVoiceChannel(i.GuildID, channelID)
-		if err != nil {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
-			})
-			return
-		}
-	}
-	
-	client.mu.Lock()
-	client.isInIdleMode = isInIdleVC
-	streamer := client.radioStreamer
-	client.mu.Unlock()
-	
-	go streamer.Start()
-	
-	s.UpdateGameStatus(0, "Radio Mode | Use /help")
-	
-	if isInIdleVC {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("✅ Idle radio mode started in default channel!"),
-		})
-	} else {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("✅ Radio started in current channel! (Not in idle mode)"),
-		})
-	}
+func (c *SetDefaultVCCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
+    s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+        Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+    })
+    
+    options := i.ApplicationCommandData().Options
+    channel := options[0].ChannelValue(s)
+    
+    if channel.Type != discordgo.ChannelTypeGuildVoice {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ Please select a voice channel."),
+        })
+        return
+    }
+    
+    client.SetDefaultVoiceChannel(i.GuildID, channel.ID)
+    
+    s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+        Content: stringPtr(fmt.Sprintf("✅ Default voice channel set to %s", channel.Name)),
+    })
 }
 
 type RadioURLCommand struct{}
@@ -223,6 +176,9 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		// When starting radio in a non-default channel, disable idle mode
 		client.DisableIdleMode()
 	}
+	
+	// Stop any currently playing audio
+	client.StopAllPlayback()
 	
 	// Check if already connected to the right channel
 	currentVC := false

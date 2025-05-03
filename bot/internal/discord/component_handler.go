@@ -45,27 +45,3 @@ func (c *Client) handleComponentInteraction(s *discordgo.Session, i *discordgo.I
 	// Call the handler
 	handler(s, i)
 }
-
-// Connect also starts the search cache cleanup
-func (c *Client) Connect() error {
-	err := c.session.Open()
-	if err != nil {
-		return err
-	}
-	
-	// Test UDS connection
-	err = c.udsClient.Ping()
-	if err != nil {
-		logger.WarnLogger.Printf("Failed to ping downloader service: %v", err)
-		logger.WarnLogger.Println("Make sure the downloader service is running!")
-	} else {
-		logger.InfoLogger.Println("Successfully connected to downloader service")
-	}
-	
-	c.startIdleChecker()
-	c.CleanupSearchCache() // Start the search cache cleanup
-	
-	go c.startIdleMode()
-	
-	return c.RefreshSlashCommands()
-}
