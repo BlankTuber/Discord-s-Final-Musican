@@ -49,7 +49,7 @@ func main() {
 	}
 
 	// Initialize commands as enabled when the bot starts
-	client.commandsEnabled = true
+	client.CommandsEnabled = true
 	
 	logger.InfoLogger.Println("Bot is now running. Press CTRL-C to exit.")
 	

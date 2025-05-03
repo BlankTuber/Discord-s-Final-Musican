@@ -63,20 +63,20 @@ type Client struct {
 	
 	stopChan         chan bool
 
-	commandsEnabled bool
+	CommandsEnabled bool
 	commandsMutex  sync.RWMutex
 }
 
 func (c *Client) DisableCommands() {
 	c.commandsMutex.Lock()
 	defer c.commandsMutex.Unlock()
-	c.commandsEnabled = false
+	c.CommandsEnabled = false
 }
 
 func (c *Client) IsCommandsEnabled() bool {
 	c.commandsMutex.RLock()
 	defer c.commandsMutex.RUnlock()
-	return c.commandsEnabled
+	return c.CommandsEnabled
 }
 
 func NewClient(config ClientConfig) (*Client, error) {

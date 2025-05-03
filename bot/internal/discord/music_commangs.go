@@ -2,6 +2,7 @@ package discord
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -193,149 +194,182 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	})
 }
 
-// SearchCommand struct and interface methods remain the same
 type SearchCommand struct{}
 
 func (c *SearchCommand) Name() string {
-    return "search"
+	return "search"
 }
 
 func (c *SearchCommand) Description() string {
-    return "Search and display results with buttons"
+	return "Search and display results with buttons"
 }
 
 func (c *SearchCommand) Options() []*discordgo.ApplicationCommandOption {
-    return []*discordgo.ApplicationCommandOption{
-        {
-            Type:        discordgo.ApplicationCommandOptionString,
-            Name:        "query",
-            Description: "Search query",
-            Required:    true,
-        },
-        {
-            Type:        discordgo.ApplicationCommandOptionString,
-            Name:        "platform",
-            Description: "Platform to search on",
-            Required:    false,
-            Choices: []*discordgo.ApplicationCommandOptionChoice{
-                {
-                    Name:  "YouTube",
-                    Value: "youtube",
-                },
-                {
-                    Name:  "SoundCloud",
-                    Value: "soundcloud",
-                },
-                {
-                    Name:  "YouTube Music",
-                    Value: "ytmusic",
-                },
-            },
-        },
-        {
-            Type:        discordgo.ApplicationCommandOptionInteger,
-            Name:        "count",
-            Description: "Number of results (1-5)",
-            Required:    false,
-            MinValue:    floatPtr(1),
-            MaxValue:    5,
-        },
-    }
+	return []*discordgo.ApplicationCommandOption{
+		{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "query",
+			Description: "Search query",
+			Required:    true,
+		},
+		{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "platform",
+			Description: "Platform to search on",
+			Required:    false,
+			Choices: []*discordgo.ApplicationCommandOptionChoice{
+				{
+					Name:  "YouTube",
+					Value: "youtube",
+				},
+				{
+					Name:  "SoundCloud",
+					Value: "soundcloud",
+				},
+				{
+					Name:  "YouTube Music",
+					Value: "ytmusic",
+				},
+			},
+		},
+		{
+			// Changed type to String
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "count",
+			Description: "Number of results (1-5) - Enter as text", // Updated description
+			Required:    false,
+			// Removed MinValue and MaxValue as they are not applicable to String type
+		},
+	}
 }
 
 func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-    s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-        Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-    })
-    
-    options := i.ApplicationCommandData().Options
-    query := options[0].StringValue()
-    
-    platform := DefaultSearchPlatform
-    if len(options) > 1 {
-        platform = options[1].StringValue()
-    }
-    
-    limit := DefaultSearchCount
-    if len(options) > 2 {
-        limit = int(options[2].IntValue())  // Fixed: Using IntValue() for integer option
-    }
-    
-    s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-        Content: stringPtr("🔍 Searching for: " + query + "..."),
-    })
-    
-    // Search for tracks
-    tracks, err := client.udsClient.Search(query, platform, limit, false)
-    if err != nil {
-        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-            Content: stringPtr(fmt.Sprintf("❌ Search failed: %s", err.Error())),
-        })
-        return
-    }
-    
-    if len(tracks) == 0 {
-        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-            Content: stringPtr(fmt.Sprintf("❌ No results found for \"%s\"", query)),
-        })
-        return
-    }
-    
-    // Create a unique session ID for these results
-    userID := i.Member.User.ID
-    guildID := i.GuildID
-    
-    // Store search results in cache
-    client.mu.Lock()
-    sessionID := FormatSearchButtonID(0, guildID, userID)
-    sessionID = sessionID[:strings.LastIndex(sessionID, ":")]
-    client.searchResultsCache[sessionID] = tracks
-    client.mu.Unlock()
-    
-    // Build the response message with buttons
-    var sb strings.Builder
-    sb.WriteString(fmt.Sprintf("🔍 **Search Results for \"%s\":**\n\n", query))
-    
-    // Create component rows with buttons for each track
-    var components []discordgo.MessageComponent
-    
-    for i, track := range tracks {
-        // Format duration
-        minutes := track.Duration / 60
-        seconds := track.Duration % 60
-        durationStr := fmt.Sprintf("[%d:%02d]", minutes, seconds)
-        
-        // Add track info to message
-        sb.WriteString(fmt.Sprintf("%d. **%s** %s\n", i+1, track.Title, durationStr))
-        if track.ArtistName != "" {
-            sb.WriteString(fmt.Sprintf("   By: %s\n", track.ArtistName))
-        }
-        sb.WriteString("\n")
-        
-        // Create a button for this track
-        customID := FormatSearchButtonID(i, guildID, userID)
-        button := discordgo.Button{
-            Label:    fmt.Sprintf("%d. %s", i+1, track.Title),
-            Style:    discordgo.PrimaryButton,
-            CustomID: customID,
-        }
-        
-        // Create action row with the button
-        actionRow := discordgo.ActionsRow{
-            Components: []discordgo.MessageComponent{button},
-        }
-        
-        // Add the action row to components
-        components = append(components, actionRow)
-    }
-    
-    sb.WriteString("Click a button below to select and play a track.")
-    
-    // Edit the response with search results and buttons
-    s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-        Content:    stringPtr(sb.String()),
-        Components: &components,
-    })
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+
+	options := i.ApplicationCommandData().Options
+	query := options[0].StringValue()
+
+	platform := DefaultSearchPlatform
+	// Find the platform option
+	for _, opt := range options[1:] { // Start from the second option
+		if opt.Name == "platform" {
+			platform = opt.StringValue()
+			break
+		}
+	}
+
+
+	limit := DefaultSearchCount
+	// Find the count option
+	for _, opt := range options[1:] { // Start from the second option
+		if opt.Name == "count" {
+			countStr := opt.StringValue()
+			if countStr != "" { // Only attempt conversion if string is not empty
+				parsedCount, err := strconv.Atoi(countStr)
+				if err != nil {
+					// Handle invalid input - use default count and inform user
+					s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+						Content: stringPtr(fmt.Sprintf("⚠️ Invalid number provided for count ('%s'). Using default count of %d.", countStr, DefaultSearchCount)),
+					})
+					limit = DefaultSearchCount
+				} else {
+					// Validate the parsed integer is within the desired range (1-5)
+					if parsedCount >= 1 && parsedCount <= 5 {
+						limit = parsedCount
+					} else {
+						// Handle out of range input
+						s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+							Content: stringPtr(fmt.Sprintf("⚠️ Count must be between 1 and 5. Using default count of %d.", DefaultSearchCount)),
+						})
+						limit = DefaultSearchCount
+					}
+				}
+			}
+			break // Found the count option, no need to continue loop
+		}
+	}
+
+
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("🔍 Searching for: " + query + "..."),
+	})
+
+	// Search for tracks
+	// Assuming udsClient.Search takes int for limit
+	tracks, err := client.udsClient.Search(query, platform, limit, false)
+	if err != nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr(fmt.Sprintf("❌ Search failed: %s", err.Error())),
+		})
+		return
+	}
+
+	if len(tracks) == 0 {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr(fmt.Sprintf("❌ No results found for \"%s\"", query)),
+		})
+		return
+	}
+
+	// Create a unique session ID for these results
+	userID := i.Member.User.ID
+	guildID := i.GuildID
+
+	// Store search results in cache
+	// Ensure your client.mu is properly initialized (e.g., sync.Mutex)
+	// client.mu.Lock()
+	sessionID := FormatSearchButtonID(0, guildID, userID)
+	sessionID = sessionID[:strings.LastIndex(sessionID, ":")]
+	client.searchResultsCache[sessionID] = tracks
+	// client.mu.Unlock()
+
+
+	// Build the response message with buttons
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🔍 **Search Results for \"%s\":**\n\n", query))
+
+	// Create component rows with buttons for each track
+	var components []discordgo.MessageComponent
+
+	for i, track := range tracks {
+		// Format duration
+		minutes := track.Duration / 60
+		seconds := track.Duration % 60
+		durationStr := fmt.Sprintf("[%d:%02d]", minutes, seconds)
+
+		// Add track info to message
+		sb.WriteString(fmt.Sprintf("%d. **%s** %s\n", i+1, track.Title, durationStr))
+		if track.ArtistName != "" {
+			sb.WriteString(fmt.Sprintf("   By: %s\n", track.ArtistName))
+		}
+		sb.WriteString("\n")
+
+		// Create a button for this track
+		customID := FormatSearchButtonID(i, guildID, userID)
+		button := discordgo.Button{
+			Label:    fmt.Sprintf("%d. %s", i+1, track.Title),
+			Style:    discordgo.PrimaryButton,
+			CustomID: customID,
+		}
+
+		// Create action row with the button
+		actionRow := discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{button},
+		}
+
+		// Add the action row to components
+		components = append(components, actionRow)
+	}
+
+	sb.WriteString("Click a button below to select and play a track.")
+
+	// Edit the response with search results and buttons
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content:    stringPtr(sb.String()),
+		Components: &components,
+	})
 }
 
 type QueueCommand struct{}
