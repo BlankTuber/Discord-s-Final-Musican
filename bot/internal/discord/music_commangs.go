@@ -3,20 +3,23 @@ package discord
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
 
 const (
-	DefaultMaxDuration  = 600  // 10 minutes
-	DefaultMaxSize      = 50   // 50 MB
-	DefaultPlaylistMax  = 20   // 20 songs
-	DefaultSearchCount  = 5    // 5 results
-	DefaultSearchPlatform = "youtube"
+	DefaultMaxDuration     = 600  // 10 minutes
+	DefaultMaxSize         = 50   // 50 MB
+	DefaultPlaylistMax     = 10   // Default max playlist items
+	DefaultPlaylistMaxOpt  = 20   // Max allowed playlist items
+	DefaultSearchCount     = 5    // 5 results
+	DefaultSearchPlatform  = "youtube"
 )
 
 func registerMusicCommands(registry *CommandRegistry) {
 	registry.Register(&PlayCommand{})
+	registry.Register(&PlaylistCommand{})
 	registry.Register(&SearchCommand{})
 	registry.Register(&QueueCommand{})
 	registry.Register(&SkipCommand{})
@@ -25,6 +28,7 @@ func registerMusicCommands(registry *CommandRegistry) {
 	registry.Register(&VolumeCommand{})
 	registry.Register(&PopularCommand{})
 	registry.Register(&RecentCommand{})
+	registry.Register(&RemoveCommand{})
 }
 
 type PlayCommand struct{}
@@ -34,22 +38,16 @@ func (c *PlayCommand) Name() string {
 }
 
 func (c *PlayCommand) Description() string {
-	return "Play a song or add it to the queue"
+	return "Play a song by URL"
 }
 
 func (c *PlayCommand) Options() []*discordgo.ApplicationCommandOption {
 	return []*discordgo.ApplicationCommandOption{
 		{
 			Type:        discordgo.ApplicationCommandOptionString,
-			Name:        "song",
-			Description: "URL or search query for the song to play",
+			Name:        "url",
+			Description: "URL of the song to play",
 			Required:    true,
-		},
-		{
-			Type:        discordgo.ApplicationCommandOptionBoolean,
-			Name:        "playlist",
-			Description: "Whether to download the entire playlist (if URL is a playlist)",
-			Required:    false,
 		},
 	}
 }
@@ -60,11 +58,92 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	})
 	
 	options := i.ApplicationCommandData().Options
-	query := options[0].StringValue()
+	url := options[0].StringValue()
 	
-	isPlaylist := false
+	channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
+	if err != nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ You need to be in a voice channel to use this command."),
+		})
+		return
+	}
+	
+	// When someone manually plays a song, disable idle mode
+	client.DisableIdleMode()
+	
+	err = client.JoinVoiceChannel(i.GuildID, channelID)
+	if err != nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
+		})
+		return
+	}
+	
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("⏳ Downloading song..."),
+	})
+	
+	// Use the updated UDS client to get track directly
+	track, err := client.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
+	if err != nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr(fmt.Sprintf("❌ Failed to download song: %s", err.Error())),
+		})
+		return
+	}
+	
+	track.Requester = i.Member.User.Username
+	track.RequestedAt = time.Now().Unix()
+	
+	// Save the track to queue and start playing
+	client.AddTrackToQueue(i.GuildID, track)
+	
+	// Update the response message
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr(fmt.Sprintf("✅ Added to queue: **%s**", track.Title)),
+	})
+}
+
+type PlaylistCommand struct{}
+
+func (c *PlaylistCommand) Name() string {
+	return "playlist"
+}
+
+func (c *PlaylistCommand) Description() string {
+	return "Play a playlist from URL"
+}
+
+func (c *PlaylistCommand) Options() []*discordgo.ApplicationCommandOption {
+	return []*discordgo.ApplicationCommandOption{
+		{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "url",
+			Description: "URL of the playlist to play",
+			Required:    true,
+		},
+		{
+			Type:        discordgo.ApplicationCommandOptionInteger,
+			Name:        "amount",
+			Description: "Number of songs to download (1-20)",
+			Required:    false,
+			MinValue:    floatPtr(1),
+			MaxValue:    float64(DefaultPlaylistMaxOpt),
+		},
+	}
+}
+
+func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	
+	options := i.ApplicationCommandData().Options
+	url := options[0].StringValue()
+	
+	maxItems := DefaultPlaylistMax
 	if len(options) > 1 {
-		isPlaylist = options[1].BoolValue()
+		maxItems = int(options[1].IntValue())
 	}
 	
 	channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
@@ -86,43 +165,32 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		return
 	}
 	
-	isURL := strings.HasPrefix(query, "http://") || strings.HasPrefix(query, "https://")
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("⏳ Processing playlist... This might take a while."),
+	})
 	
-	if isURL {
-		// Process as URL
-		if isPlaylist {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr("⏳ Processing playlist... This might take a while."),
-			})
-			
-			go client.ProcessPlaylist(i.GuildID, query, i.Member.User.Username, func(message string) {
-				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-					Content: stringPtr(message),
-				})
-			})
-		} else {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr("⏳ Downloading song..."),
-			})
-			
-			go client.ProcessSong(i.GuildID, query, i.Member.User.Username, func(message string) {
-				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-					Content: stringPtr(message),
-				})
-			})
-		}
-	} else {
-		// Process as search query
+	// Use the updated UDS client to get tracks directly
+	tracks, err := client.udsClient.DownloadPlaylist(url, maxItems, DefaultMaxDuration, DefaultMaxSize, false)
+	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("🔍 Searching for: " + query),
+			Content: stringPtr(fmt.Sprintf("❌ Failed to download playlist: %s", err.Error())),
 		})
-		
-		go client.ProcessSearch(i.GuildID, query, i.Member.User.Username, func(message string) {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr(message),
-			})
-		})
+		return
 	}
+	
+	// Set requester for all tracks
+	for _, track := range tracks {
+		track.Requester = i.Member.User.Username
+		track.RequestedAt = time.Now().Unix()
+		
+		// Add tracks to queue
+		client.AddTrackToQueue(i.GuildID, track)
+	}
+	
+	// Update the response message
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr(fmt.Sprintf("✅ Added %d songs from playlist to the queue!", len(tracks))),
+	})
 }
 
 type SearchCommand struct{}
@@ -132,7 +200,7 @@ func (c *SearchCommand) Name() string {
 }
 
 func (c *SearchCommand) Description() string {
-	return "Search for songs"
+	return "Search and display results with buttons"
 }
 
 func (c *SearchCommand) Options() []*discordgo.ApplicationCommandOption {
@@ -146,7 +214,7 @@ func (c *SearchCommand) Options() []*discordgo.ApplicationCommandOption {
 		{
 			Type:        discordgo.ApplicationCommandOptionString,
 			Name:        "platform",
-			Description: "Platform to search on (youtube, soundcloud, etc.)",
+			Description: "Platform to search on",
 			Required:    false,
 			Choices: []*discordgo.ApplicationCommandOptionChoice{
 				{
@@ -157,15 +225,19 @@ func (c *SearchCommand) Options() []*discordgo.ApplicationCommandOption {
 					Name:  "SoundCloud",
 					Value: "soundcloud",
 				},
+				{
+					Name:  "YouTube Music",
+					Value: "ytmusic",
+				},
 			},
 		},
 		{
 			Type:        discordgo.ApplicationCommandOptionInteger,
-			Name:        "limit",
-			Description: "Number of results (1-10)",
+			Name:        "count",
+			Description: "Number of results (1-5)",
 			Required:    false,
 			MinValue:    floatPtr(1),
-			MaxValue:    10,
+			MaxValue:    5,
 		},
 	}
 }
@@ -188,39 +260,78 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 		limit = int(options[2].IntValue())
 	}
 	
-	results, err := client.udsClient.Search(query, platform, limit, false)
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("🔍 Searching for: " + query + "..."),
+	})
+	
+	// Search for tracks
+	tracks, err := client.udsClient.Search(query, platform, limit, false)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Error searching: " + err.Error()),
+			Content: stringPtr(fmt.Sprintf("❌ Search failed: %s", err.Error())),
 		})
 		return
 	}
 	
-	if len(results) == 0 {
+	if len(tracks) == 0 {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ No results found for \"" + query + "\""),
+			Content: stringPtr(fmt.Sprintf("❌ No results found for \"%s\"", query)),
 		})
 		return
 	}
 	
+	// Create a unique session ID for these results
+	userID := i.Member.User.ID
+	guildID := i.GuildID
+	
+	// Store search results in cache
+	client.mu.Lock()
+	sessionID := FormatSearchButtonID(0, guildID, userID)
+	sessionID = sessionID[:strings.LastIndex(sessionID, ":")]
+	client.searchResultsCache[sessionID] = tracks
+	client.mu.Unlock()
+	
+	// Build the response message with buttons
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("🔍 **Search Results for \"%s\":**\n\n", query))
 	
-	for i, result := range results {
-		title, _ := result["title"].(string)
-		uploader, _ := result["uploader"].(string)
-		duration, _ := result["duration"].(float64)
+	// Create component rows with buttons for each track
+	var components []discordgo.MessageComponent
+	var currentRow []discordgo.MessageComponent
+	
+	for i, track := range tracks {
+		// Format duration
+		minutes := track.Duration / 60
+		seconds := track.Duration % 60
+		durationStr := fmt.Sprintf("[%d:%02d]", minutes, seconds)
 		
-		minutes := int(duration) / 60
-		seconds := int(duration) % 60
+		// Add track info to message
+		sb.WriteString(fmt.Sprintf("%d. **%s** %s\n", i+1, track.Title, durationStr))
+		if track.ArtistName != "" {
+			sb.WriteString(fmt.Sprintf("   By: %s\n", track.ArtistName))
+		}
+		sb.WriteString("\n")
 		
-		sb.WriteString(fmt.Sprintf("`%d.` **%s** [%d:%02d]\nBy: %s\n\n", i+1, title, minutes, seconds, uploader))
+		// Create a button for this track
+		customID := FormatSearchButtonID(i, guildID, userID)
+		button := discordgo.Button{
+			Label:    fmt.Sprintf("%d. %s", i+1, track.Title),
+			Style:    discordgo.PrimaryButton,
+			CustomID: customID,
+		}
+		
+		// Each button in its own row for better spacing
+		components = append(components, discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{button},
+		})
 	}
 	
-	sb.WriteString("To play a result, use `/play` with the song title or number from this list.")
+	sb.WriteString("Click a button below to select and play a track.")
 	
+	// Edit the response with search results and buttons
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(sb.String()),
+		Content:    stringPtr(sb.String()),
+		Components: &components,
 	})
 }
 
@@ -243,11 +354,11 @@ func (c *QueueCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 	
-	queue, currentTrack := client.GetQueueInfo(i.GuildID)
+	queue, currentTrack := client.GetQueueState(i.GuildID)
 	
 	if currentTrack == nil && len(queue) == 0 {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("🎵 **Queue is empty**\n\nUse `/play` to add songs."),
+			Content: stringPtr("🎵 **Queue is empty**\n\nUse `/play`, `/playlist`, or `/search` to add songs."),
 		})
 		return
 	}
@@ -265,7 +376,7 @@ func (c *QueueCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 	
 	if len(queue) == 0 {
-		sb.WriteString("**Queue is empty**\n\nUse `/play` to add more songs.")
+		sb.WriteString("**Queue is empty**\n\nUse `/play`, `/playlist`, or `/search` to add more songs.")
 	} else {
 		sb.WriteString("**Up Next:**\n")
 		
@@ -483,6 +594,13 @@ func (c *PopularCommand) Execute(s *discordgo.Session, i *discordgo.InteractionC
 		limit = int(i.ApplicationCommandData().Options[0].IntValue())
 	}
 	
+	if client.dbManager == nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ Database connection not available."),
+		})
+		return
+	}
+	
 	tracks, err := client.dbManager.GetPopularTracks(limit)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -513,7 +631,7 @@ func (c *PopularCommand) Execute(s *discordgo.Session, i *discordgo.InteractionC
 		}
 	}
 	
-	sb.WriteString("\nUse `/play` with the song title to play one of these tracks.")
+	sb.WriteString("\nUse `/play` with the song URL to play one of these tracks.")
 	
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(sb.String()),
@@ -553,6 +671,13 @@ func (c *RecentCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 		limit = int(i.ApplicationCommandData().Options[0].IntValue())
 	}
 	
+	if client.dbManager == nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ Database connection not available."),
+		})
+		return
+	}
+	
 	tracks, err := client.dbManager.GetRecentTracks(limit)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -583,9 +708,59 @@ func (c *RecentCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 		}
 	}
 	
-	sb.WriteString("\nUse `/play` with the song title to play one of these tracks.")
+	sb.WriteString("\nUse `/play` with the song URL to play one of these tracks.")
 	
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(sb.String()),
+	})
+}
+
+type RemoveCommand struct{}
+
+func (c *RemoveCommand) Name() string {
+	return "remove"
+}
+
+func (c *RemoveCommand) Description() string {
+	return "Remove a song from the queue"
+}
+
+func (c *RemoveCommand) Options() []*discordgo.ApplicationCommandOption {
+	return []*discordgo.ApplicationCommandOption{
+		{
+			Type:        discordgo.ApplicationCommandOptionInteger,
+			Name:        "position",
+			Description: "Position of the song in the queue",
+			Required:    true,
+			MinValue:    floatPtr(1),
+		},
+	}
+}
+
+func (c *RemoveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+	})
+	
+	options := i.ApplicationCommandData().Options
+	position := int(options[0].IntValue()) - 1  // Convert to 0-based
+	
+	removed, err := client.RemoveFromQueue(i.GuildID, position)
+	if err != nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr(fmt.Sprintf("❌ Error removing song: %s", err.Error())),
+		})
+		return
+	}
+	
+	if !removed {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr(fmt.Sprintf("❌ No song at position %d in the queue", position+1)),
+		})
+		return
+	}
+	
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr(fmt.Sprintf("✅ Removed song at position %d from the queue", position+1)),
 	})
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	"quidque.com/discord-musican/internal/audio"
 	"quidque.com/discord-musican/internal/logger"
 )
 
@@ -35,7 +36,7 @@ type Response struct {
 func NewClient(socketPath string) *Client {
 	return &Client{
 		socketPath: socketPath,
-		timeout:    30 * time.Second,
+		timeout:    60 * time.Second, // Increased from 30 to 60 seconds
 	}
 }
 
@@ -134,7 +135,7 @@ func (c *Client) Ping() error {
 	return nil
 }
 
-func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLive bool) (map[string]interface{}, error) {
+func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLive bool) (*audio.Track, error) {
 	params := map[string]interface{}{
 		"url":                  url,
 		"max_duration_seconds": maxDuration,
@@ -147,10 +148,52 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 		return nil, err
 	}
 	
-	return response.Data, nil
+	if response.Status != "success" {
+		errMsg := "Download failed"
+		if response.Error != "" {
+			errMsg = response.Error
+		}
+		return nil, errors.New(errMsg)
+	}
+	
+	track := &audio.Track{
+		URL:          url,
+		Requester:    "",
+		RequestedAt:  time.Now().Unix(),
+	}
+	
+	// Extract track info from response
+	if data, ok := response.Data["title"].(string); ok {
+		track.Title = data
+	}
+	
+	if data, ok := response.Data["filename"].(string); ok {
+		track.FilePath = data
+	}
+	
+	if data, ok := response.Data["duration"].(float64); ok {
+		track.Duration = int(data)
+	}
+	
+	// Additional fields from newer response format
+	if data, ok := response.Data["artist"].(string); ok {
+		track.ArtistName = data
+	}
+	
+	if data, ok := response.Data["thumbnail_url"].(string); ok {
+		track.ThumbnailURL = data
+	}
+	
+	if data, ok := response.Data["is_stream"].(bool); ok {
+		track.IsStream = data
+	}
+	
+	track.DownloadStatus = "completed"
+	
+	return track, nil
 }
 
-func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, maxSize int, allowLive bool) (map[string]interface{}, error) {
+func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, maxSize int, allowLive bool) ([]*audio.Track, error) {
 	params := map[string]interface{}{
 		"url":                  url,
 		"max_items":            maxItems,
@@ -164,10 +207,70 @@ func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, max
 		return nil, err
 	}
 	
-	return response.Data, nil
+	if response.Status != "success" {
+		errMsg := "Playlist download failed"
+		if response.Error != "" {
+			errMsg = response.Error
+		}
+		return nil, errors.New(errMsg)
+	}
+	
+	var tracks []*audio.Track
+	
+	// Check for count field in simplified response
+	if countValue, ok := response.Data["count"].(float64); ok {
+		count := int(countValue)
+		tracks = make([]*audio.Track, 0, count)
+		
+		// Create minimal tracks if not detailed response
+		if count > 0 && response.Data["items"] == nil {
+			for i := 0; i < count; i++ {
+				track := &audio.Track{
+					Title:         fmt.Sprintf("Track %d from playlist", i+1),
+					URL:           url,
+					RequestedAt:   time.Now().Unix(),
+					DownloadStatus: "completed",
+				}
+				tracks = append(tracks, track)
+			}
+		}
+	}
+	
+	// Check for detailed items response
+	if itemsData, ok := response.Data["items"].([]interface{}); ok {
+		for _, itemData := range itemsData {
+			if item, ok := itemData.(map[string]interface{}); ok {
+				track := &audio.Track{
+					URL:          url,
+					RequestedAt:  time.Now().Unix(),
+					DownloadStatus: "completed",
+				}
+				
+				if data, ok := item["title"].(string); ok {
+					track.Title = data
+				}
+				
+				if data, ok := item["filename"].(string); ok {
+					track.FilePath = data
+				}
+				
+				if data, ok := item["duration"].(float64); ok {
+					track.Duration = int(data)
+				}
+				
+				tracks = append(tracks, track)
+			}
+		}
+	}
+	
+	if len(tracks) == 0 {
+		return nil, errors.New("no tracks found in playlist")
+	}
+	
+	return tracks, nil
 }
 
-func (c *Client) Search(query string, platform string, limit int, includeLive bool) ([]map[string]interface{}, error) {
+func (c *Client) Search(query string, platform string, limit int, includeLive bool) ([]*audio.Track, error) {
 	params := map[string]interface{}{
 		"query":        query,
 		"platform":     platform,
@@ -180,17 +283,46 @@ func (c *Client) Search(query string, platform string, limit int, includeLive bo
 		return nil, err
 	}
 	
-	if results, ok := response.Data["results"].([]interface{}); ok {
-		typedResults := make([]map[string]interface{}, 0, len(results))
-		
-		for _, result := range results {
-			if mapResult, ok := result.(map[string]interface{}); ok {
-				typedResults = append(typedResults, mapResult)
-			}
-		}
-		
-		return typedResults, nil
+	var results []interface{}
+	
+	if data, ok := response.Data["results"].([]interface{}); ok {
+		results = data
+	} else {
+		return []*audio.Track{}, nil
 	}
 	
-	return []map[string]interface{}{}, nil
+	tracks := make([]*audio.Track, 0, len(results))
+	
+	for _, result := range results {
+		if mapResult, ok := result.(map[string]interface{}); ok {
+			track := &audio.Track{
+				RequestedAt:  time.Now().Unix(),
+				DownloadStatus: "pending",
+			}
+			
+			if data, ok := mapResult["title"].(string); ok {
+				track.Title = data
+			}
+			
+			if data, ok := mapResult["url"].(string); ok {
+				track.URL = data
+			}
+			
+			if data, ok := mapResult["duration"].(float64); ok {
+				track.Duration = int(data)
+			}
+			
+			if data, ok := mapResult["thumbnail"].(string); ok {
+				track.ThumbnailURL = data
+			}
+			
+			if data, ok := mapResult["uploader"].(string); ok {
+				track.ArtistName = data
+			}
+			
+			tracks = append(tracks, track)
+		}
+	}
+	
+	return tracks, nil
 }

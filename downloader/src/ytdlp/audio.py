@@ -1,4 +1,5 @@
 import os
+import time
 import yt_dlp
 from ytdlp import utils
 
@@ -7,7 +8,7 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
     platform_prefix = utils.get_platform_prefix(platform)
     
     try:
-        # Only check if the song exists in the database
+        # First check if the song exists in the database and the file exists
         song = db.get_song_by_url(url)
         if song and os.path.exists(song['file_path']):
             print(f"Song already exists in database and file exists: {song['title']}")
@@ -18,9 +19,13 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 'duration': song['duration'],
                 'file_size': song['file_size'],
                 'platform': song['platform'],
+                'artist': song.get('artist', ''),
+                'thumbnail_url': song.get('thumbnail_url', ''),
+                'is_stream': song.get('is_stream', False),
                 'skipped': True
             }
-        
+            
+        # Check basic info about the URL without downloading
         with yt_dlp.YoutubeDL({
             'skip_download': True, 
             'quiet': True,
@@ -29,6 +34,7 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
             info = ydl.extract_info(url, download=False)
             
             if not info:
+                print(f"No info found for URL: {url}")
                 return None
             
             if not allow_live and info.get('duration') is None:
@@ -86,13 +92,14 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
             
             if max_duration_seconds or max_size_mb:
                 ydl_opts['match_filter'] = lambda info: utils.match_filter_func(
-                    info, max_duration_seconds, max_size_mb
+                    info, max_duration_seconds, max_size_mb, allow_live
                 )
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 
                 if not info:
+                    print(f"Failed to extract info during download for: {url}")
                     return None
                 
                 filename = f"{platform_prefix}_{info['id']}.mp3"
@@ -114,6 +121,10 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 'quiet': True
             }) as ydl:
                 info = ydl.extract_info(url, download=False)
+                
+                if not info:
+                    print(f"Failed to extract info for database entry: {url}")
+                    info = {'title': 'Unknown', 'id': os.path.basename(full_path).split('.')[0]}
             
             thumbnail = info.get('thumbnail', '')
             if isinstance(thumbnail, dict) and 'url' in thumbnail:
@@ -121,18 +132,28 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
             
             artist = info.get('artist', info.get('uploader', info.get('channel', 'Unknown')))
             
-            # Now add to database
-            song_id = db.add_song(
-                title=info.get('title', 'Unknown'),
-                url=url,
-                platform=platform,
-                file_path=full_path,
-                duration=info.get('duration'),
-                file_size=file_size,
-                thumbnail_url=thumbnail,
-                artist=artist,
-                is_stream=info.get('is_live', False)
-            )
+            # Check if the song already exists in the database
+            existing_song = db.get_song_by_url(url)
+            if existing_song:
+                print(f"Song already exists in database: {existing_song['title']}")
+                song_id = existing_song['id']
+            else:
+                # Now add to database
+                song_id = db.add_song(
+                    title=info.get('title', 'Unknown'),
+                    url=url,
+                    platform=platform,
+                    file_path=full_path,
+                    duration=info.get('duration'),
+                    file_size=file_size,
+                    thumbnail_url=thumbnail,
+                    artist=artist,
+                    is_stream=info.get('is_live', False)
+                )
+                print(f"Added song to database with ID: {song_id}")
+            
+            # Wait a moment to ensure database operations complete
+            time.sleep(0.2)
             
             return {
                 'id': song_id,
@@ -141,9 +162,13 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 'duration': info.get('duration'),
                 'file_size': file_size,
                 'platform': platform,
+                'artist': artist,
+                'thumbnail_url': thumbnail,
+                'is_stream': info.get('is_live', False),
                 'skipped': False
             }
         else:
+            print(f"File does not exist after download: {full_path}")
             return None
             
     except yt_dlp.utils.DownloadError as e:

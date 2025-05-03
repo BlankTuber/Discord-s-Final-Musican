@@ -7,6 +7,11 @@ def find(query, platform='youtube', limit=5, include_live=False):
     
     platform = platform.lower()
     
+    # Set longer timeout for YouTube Music searches
+    timeout = 60  # Default timeout
+    if platform in ['music.youtube.com', 'ytmusic', 'youtube music', 'https://music.youtube.com']:
+        timeout = 120  # Extended timeout for YouTube Music
+    
     # Handle different platform inputs
     if platform in ['youtube', 'youtu.be', 'youtube.com', 'https://youtube.com', 'https://youtu.be']:
         search_url = f'ytsearch{limit*2}:{query}'
@@ -26,7 +31,8 @@ def find(query, platform='youtube', limit=5, include_live=False):
         'skip_download': True,
         'quiet': True,
         'no_warnings': True,
-        'ignoreerrors': True
+        'ignoreerrors': True,
+        'socket_timeout': timeout  # Use dynamic timeout
     }
     
     try:

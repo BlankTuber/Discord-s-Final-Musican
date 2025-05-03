@@ -15,7 +15,6 @@ func main() {
 	flag.StringVar(&sharedFolder, "path", "../shared", "Path to the shared folder")
 	flag.Parse()
 	
-	// Ensure we're using absolute path
 	absPath, err := filepath.Abs(sharedFolder)
 	if err != nil {
 		fmt.Printf("Error resolving absolute path: %v\n", err)
@@ -104,10 +103,47 @@ func main() {
 	}
 	
 	_, err = db.Exec(`
+	CREATE TABLE queues (
+		id INTEGER PRIMARY KEY,
+		guild_id TEXT UNIQUE NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)
+	`)
+	if err != nil {
+		fmt.Printf("Error creating queues table: %v\n", err)
+		return
+	}
+	
+	_, err = db.Exec(`
+	CREATE TABLE queue_items (
+		id INTEGER PRIMARY KEY,
+		queue_id INTEGER NOT NULL,
+		song_id INTEGER,
+		title TEXT NOT NULL,
+		url TEXT NOT NULL,
+		duration INTEGER,
+		requester TEXT,
+		requested_at INTEGER NOT NULL,
+		position INTEGER NOT NULL,
+		played BOOLEAN DEFAULT 0,
+		FOREIGN KEY (queue_id) REFERENCES queues(id),
+		FOREIGN KEY (song_id) REFERENCES songs(id)
+	)
+	`)
+	if err != nil {
+		fmt.Printf("Error creating queue_items table: %v\n", err)
+		return
+	}
+	
+	_, err = db.Exec(`
 	CREATE INDEX idx_songs_url ON songs(url);
 	CREATE INDEX idx_songs_play_count ON songs(play_count);
 	CREATE INDEX idx_songs_last_played ON songs(last_played);
 	CREATE INDEX idx_playlists_url ON playlists(url);
+	CREATE INDEX idx_queues_guild_id ON queues(guild_id);
+	CREATE INDEX idx_queue_items_queue_id ON queue_items(queue_id);
+	CREATE INDEX idx_queue_items_position ON queue_items(position);
 	`)
 	if err != nil {
 		fmt.Printf("Error creating indexes: %v\n", err)

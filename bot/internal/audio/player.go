@@ -32,7 +32,6 @@ type Player struct {
 	vc            *discordgo.VoiceConnection
 	stopChan      chan bool
 	stream        *os.File
-	frameBuffer   [][]byte
 	volumeLevel   float32
 	state         PlayerState
 	currentTrack  *Track
@@ -161,6 +160,13 @@ func (p *Player) playTrack(track *Track) {
 		return
 	}
 	
+	// Check if file exists
+	if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+		logger.ErrorLogger.Printf("Audio file not found: %s", track.FilePath)
+		go p.playNextTrack()
+		return
+	}
+	
 	file, err := os.Open(track.FilePath)
 	if err != nil {
 		logger.ErrorLogger.Printf("Failed to open audio file %s: %v", track.FilePath, err)
@@ -222,24 +228,23 @@ func (p *Player) playTrack(track *Track) {
 		select {
 		case <-stopChan:
 			playing = false
-			break
 		default:
 			err = binary.Read(out, binary.LittleEndian, &audioBuf)
 			if err != nil {
 				if err == io.EOF || err == io.ErrUnexpectedEOF {
 					playing = false
-					break
+					continue
 				}
 				logger.ErrorLogger.Printf("Error reading audio data: %v", err)
 				playing = false
-				break
+				continue
 			}
 			
 			opusData, err := encoder.Encode(audioBuf, frameSize, len(opusBuffer))
 			if err != nil {
 				logger.ErrorLogger.Printf("Error encoding to opus: %v", err)
 				playing = false
-				break
+				continue
 			}
 			
 			vc.OpusSend <- opusData

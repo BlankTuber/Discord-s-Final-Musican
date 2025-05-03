@@ -45,7 +45,3 @@ func (r *CommandRegistry) GetAllCommands() []Command {
 	}
 	return cmds
 }
-
-func stringPtr(s string) *string {
-	return &s
-}

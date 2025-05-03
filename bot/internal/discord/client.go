@@ -25,6 +25,7 @@ type ClientConfig struct {
 	RadioURL       string
 	IdleTimeout    int
 	UDSPath        string
+	DBPath         string
 }
 
 type Client struct {
@@ -35,7 +36,7 @@ type Client struct {
 	voiceConnections map[string]*discordgo.VoiceConnection
 	currentVolume    float32
 	
-	songQueues       map[string][]audio.Track
+	songQueues       map[string][]*audio.Track
 	playbackStatus   map[string]string
 	players          map[string]*audio.Player
 	
@@ -56,6 +57,10 @@ type Client struct {
 	
 	udsClient        *uds.Client
 	dbManager        *database.Manager
+	
+	// New fields for component handling
+	searchResultsCache map[string][]*audio.Track
+	componentHandlers  map[string]func(*discordgo.Session, *discordgo.InteractionCreate)
 	
 	stopChan         chan bool
 }
@@ -78,7 +83,7 @@ func NewClient(config ClientConfig) (*Client, error) {
 		clientID:         config.ClientID,
 		currentVolume:    config.DefaultVolume,
 		voiceConnections: make(map[string]*discordgo.VoiceConnection),
-		songQueues:       make(map[string][]audio.Track),
+		songQueues:       make(map[string][]*audio.Track),
 		playbackStatus:   make(map[string]string),
 		players:          make(map[string]*audio.Player),
 		defaultGuildID:   config.DefaultGuildID,
@@ -88,6 +93,9 @@ func NewClient(config ClientConfig) (*Client, error) {
 		lastActivityTime: time.Now(),
 		isInIdleMode:     false,
 		idleModeDisabled: false,
+		// New fields
+		searchResultsCache: make(map[string][]*audio.Track),
+		componentHandlers:  make(map[string]func(*discordgo.Session, *discordgo.InteractionCreate)),
 		stopChan:         make(chan bool),
 	}
 	
@@ -101,10 +109,14 @@ func NewClient(config ClientConfig) (*Client, error) {
 	client.radioStreamer = NewRadioStreamer(client, config.RadioURL, config.DefaultVolume)
 	
 	client.udsClient = uds.NewClient(config.UDSPath)
-	client.udsClient.SetTimeout(30 * time.Second)
+	client.udsClient.SetTimeout(60 * time.Second) // Increase timeout for UDS operations
 	
 	// Initialize database manager
 	dbPath := filepath.Join("..", "shared", "musicbot.db")
+	if config.DBPath != "" {
+		dbPath = config.DBPath
+	}
+	
 	dbManager, err := database.NewManager(dbPath)
 	if err != nil {
 		logger.WarnLogger.Printf("Failed to connect to database: %v", err)
@@ -116,10 +128,12 @@ func NewClient(config ClientConfig) (*Client, error) {
 	
 	session.AddHandler(client.handleReady)
 	session.AddHandler(client.handleVoiceStateUpdate)
+	session.AddHandler(client.handleComponentInteraction)
 	
 	audio.RegisterPlayerEventHandler(client.handlePlayerEvent)
 	
 	client.setupCommandSystem()
+	client.initSearchComponents()
 	
 	session.Identify.Intents = discordgo.IntentsGuildVoiceStates | 
 		discordgo.IntentsGuilds | discordgo.IntentsGuildMessages
@@ -149,7 +163,21 @@ func (c *Client) Connect() error {
 	return c.RefreshSlashCommands()
 }
 
-// This method has been removed as it duplicates the one in handler.go
+// StopAllPlayback stops all current audio playback
+func (c *Client) StopAllPlayback() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	// Stop all players
+	for _, player := range c.players {
+		if player != nil {
+			player.Stop()
+		}
+	}
+	
+	// Wait a moment to ensure playback has stopped
+	time.Sleep(100 * time.Millisecond)
+}
 
 func (c *Client) Disconnect() error {
 	if c.idleCheckTicker != nil {
@@ -336,6 +364,9 @@ func (c *Client) startIdleMode() {
 	
 	logger.InfoLogger.Println("Entering idle mode")
 	
+	// Stop any current playback
+	c.StopAllPlayback()
+	
 	// Only join if not already connected to the right channel
 	if !alreadyConnected {
 		err := c.JoinVoiceChannel(defaultGuildID, defaultVCID)
@@ -353,6 +384,9 @@ func (c *Client) startIdleMode() {
 	
 	// Invoke the janitor as a separate process
 	go c.runJanitor()
+	
+	// Wait a short moment to ensure clean audio switch
+	time.Sleep(250 * time.Millisecond)
 	
 	c.radioStreamer.Start()
 	
@@ -627,324 +661,6 @@ func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.Voice
 				}
 			}()
 		}
-	}
-}
-
-// Music playback functions
-func (c *Client) ProcessSong(guildID, url, requesterName string, callback func(string)) {
-	c.mu.RLock()
-	vc, ok := c.voiceConnections[guildID]
-	c.mu.RUnlock()
-	
-	if !ok || vc == nil {
-		callback("❌ Bot is not connected to a voice channel.")
-		return
-	}
-	
-	// First, check if this song is already in the database
-	var track *audio.Track
-	if c.dbManager != nil {
-		var err error
-		track, err = c.dbManager.GetTrackByURL(url)
-		if err != nil {
-			logger.ErrorLogger.Printf("Error querying track from database: %v", err)
-		}
-	}
-	
-	// If track not found in database, download it
-	if track == nil {
-		results, err := c.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
-		if err != nil {
-			callback(fmt.Sprintf("❌ Failed to download song: %s", err.Error()))
-			return
-		}
-		
-		if statusMsg, ok := results["status"].(string); ok && statusMsg == "error" {
-			errorMsg := "Unknown error"
-			if msg, ok := results["message"].(string); ok {
-				errorMsg = msg
-			}
-			callback(fmt.Sprintf("❌ Download failed: %s", errorMsg))
-			return
-		}
-		
-		// Try to get track info from database again after download
-		if c.dbManager != nil {
-			var err error
-			track, err = c.dbManager.GetTrackByURL(url)
-			if err != nil {
-				logger.ErrorLogger.Printf("Error querying track from database after download: %v", err)
-			}
-		}
-		
-		// If still not found, create a minimal track
-		if track == nil {
-			track = &audio.Track{
-				Title:         "Unknown Song",
-				URL:           url,
-				Requester:     requesterName,
-				RequestedAt:   time.Now().Unix(),
-				DownloadStatus: "completed",
-			}
-		}
-	}
-	
-	// Always update requester and requested time
-	track.Requester = requesterName
-	track.RequestedAt = time.Now().Unix()
-	
-	c.addTrackToQueue(guildID, *track)
-	
-	callback(fmt.Sprintf("✅ Added to queue: **%s**", track.Title))
-}
-
-func (c *Client) ProcessPlaylist(guildID, url, requesterName string, callback func(string)) {
-	c.mu.RLock()
-	vc, ok := c.voiceConnections[guildID]
-	c.mu.RUnlock()
-	
-	if !ok || vc == nil {
-		callback("❌ Bot is not connected to a voice channel.")
-		return
-	}
-	
-	results, err := c.udsClient.DownloadPlaylist(url, DefaultPlaylistMax, DefaultMaxDuration, DefaultMaxSize, false)
-	if err != nil {
-		callback(fmt.Sprintf("❌ Failed to download playlist: %s", err.Error()))
-		return
-	}
-	
-	if statusMsg, ok := results["status"].(string); ok && statusMsg == "error" {
-		errorMsg := "Unknown error"
-		if msg, ok := results["message"].(string); ok {
-			errorMsg = msg
-		}
-		callback(fmt.Sprintf("❌ Download failed: %s", errorMsg))
-		return
-	}
-	
-	count := 0
-	if countVal, ok := results["count"].(float64); ok {
-		count = int(countVal)
-	}
-	
-	if count == 0 {
-		callback("❌ No songs could be downloaded from this playlist.")
-		return
-	}
-	
-	// Add tracks to queue
-	for i := 0; i < count; i++ {
-		track := &audio.Track{
-			Title:         fmt.Sprintf("Playlist Song %d", i+1),
-			URL:           url,
-			Requester:     requesterName,
-			RequestedAt:   time.Now().Unix(),
-			DownloadStatus: "completed",
-		}
-		
-		c.addTrackToQueue(guildID, *track)
-	}
-	
-	callback(fmt.Sprintf("✅ Added %d songs from playlist to the queue!", count))
-}
-
-func (c *Client) ProcessSearch(guildID, query, requesterName string, callback func(string)) {
-	results, err := c.udsClient.Search(query, DefaultSearchPlatform, DefaultSearchCount, false)
-	if err != nil {
-		callback(fmt.Sprintf("❌ Search failed: %s", err.Error()))
-		return
-	}
-	
-	if len(results) == 0 {
-		callback(fmt.Sprintf("❌ No results found for \"%s\"", query))
-		return
-	}
-	
-	// Use the first result
-	result := results[0]
-	
-	title, _ := result["title"].(string)
-	url, _ := result["url"].(string)
-	durationFloat, _ := result["duration"].(float64)
-	duration := int(durationFloat)
-	thumbnail, _ := result["thumbnail"].(string)
-	uploader, _ := result["uploader"].(string)
-	
-	// Download the track
-	go func() {
-		callback(fmt.Sprintf("🔍 Found: **%s**\n⏳ Downloading...", title))
-		
-		downloadResults, err := c.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
-		if err != nil {
-			callback(fmt.Sprintf("❌ Failed to download song: %s", err.Error()))
-			return
-		}
-		
-		if statusMsg, ok := downloadResults["status"].(string); ok && statusMsg == "error" {
-			errorMsg := "Unknown error"
-			if msg, ok := downloadResults["message"].(string); ok {
-				errorMsg = msg
-			}
-			callback(fmt.Sprintf("❌ Download failed: %s", errorMsg))
-			return
-		}
-		 
-		// Create track
-		track := &audio.Track{
-			Title:         title,
-			URL:           url,
-			Duration:      duration,
-			Requester:     requesterName,
-			RequestedAt:   time.Now().Unix(),
-			ArtistName:    uploader,
-			ThumbnailURL:  thumbnail,
-			DownloadStatus: "completed",
-		}
-		
-		c.addTrackToQueue(guildID, *track)
-		
-		callback(fmt.Sprintf("✅ Added to queue: **%s**", title))
-	}()
-}
-
-func (c *Client) addTrackToQueue(guildID string, track audio.Track) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	if _, ok := c.songQueues[guildID]; !ok {
-		c.songQueues[guildID] = make([]audio.Track, 0)
-	}
-	
-	c.songQueues[guildID] = append(c.songQueues[guildID], track)
-	
-	// If this is the only song in the queue, start playing
-	if len(c.songQueues[guildID]) == 1 {
-		c.startPlayer(guildID)
-	}
-}
-
-func (c *Client) startPlayer(guildID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	if len(c.songQueues[guildID]) == 0 {
-		return
-	}
-	
-	// Make sure we have a voice connection
-	vc, ok := c.voiceConnections[guildID]
-	if !ok || vc == nil {
-		logger.ErrorLogger.Printf("Cannot play in guild %s: not connected to voice", guildID)
-		return
-	}
-	
-	// Stop the radio if it's playing
-	if c.isInIdleMode {
-		c.radioStreamer.Stop()
-		c.isInIdleMode = false
-	}
-	
-	// Create a player if we don't have one
-	if _, ok := c.players[guildID]; !ok {
-		c.players[guildID] = audio.NewPlayer(vc)
-	}
-	
-	player := c.players[guildID]
-	player.SetVolume(c.currentVolume)
-	
-	nextTrack := c.songQueues[guildID][0]
-	c.songQueues[guildID] = c.songQueues[guildID][1:]
-	
-	go func() {
-		player.QueueTrack(&nextTrack)
-	}()
-}
-
-func (c *Client) handlePlayerEvent(event string, data interface{}) {
-	switch event {
-	case "track_start":
-		if track, ok := data.(*audio.Track); ok {
-			logger.InfoLogger.Printf("Started playing track: %s", track.Title)
-			c.session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", track.Title))
-			
-			// Update database play count
-			if c.dbManager != nil && track.URL != "" {
-				go func() {
-					if err := c.dbManager.IncrementPlayCount(track.URL); err != nil {
-						logger.ErrorLogger.Printf("Failed to update play count: %v", err)
-					}
-				}()
-			}
-		}
-	case "track_end":
-		if track, ok := data.(*audio.Track); ok {
-			logger.InfoLogger.Printf("Finished playing track: %s", track.Title)
-		}
-	case "queue_end":
-		logger.InfoLogger.Println("Queue ended")
-		c.session.UpdateGameStatus(0, "Queue is empty | Use /play")
-		
-		// Wait a bit and then check if we should return to idle mode
-		go func() {
-			time.Sleep(5 * time.Second)
-			c.checkIdleState()
-		}()
-	}
-}
-
-func (c *Client) GetQueueInfo(guildID string) ([]audio.Track, *audio.Track) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
-	var queue []audio.Track
-	if q, ok := c.songQueues[guildID]; ok {
-		queue = make([]audio.Track, len(q))
-		copy(queue, q)
-	} else {
-		queue = make([]audio.Track, 0)
-	}
-	
-	var currentTrack *audio.Track
-	if player, ok := c.players[guildID]; ok {
-		currentTrack = player.GetCurrentTrack()
-	}
-	
-	return queue, currentTrack
-}
-
-func (c *Client) GetCurrentTrack(guildID string) *audio.Track {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
-	if player, ok := c.players[guildID]; ok {
-		return player.GetCurrentTrack()
-	}
-	
-	return nil
-}
-
-func (c *Client) SkipSong(guildID string) bool {
-	c.mu.RLock()
-	player, ok := c.players[guildID]
-	c.mu.RUnlock()
-	
-	if !ok || player.GetState() != audio.StatePlaying {
-		return false
-	}
-	
-	player.Skip()
-	return true
-}
-
-func (c *Client) ClearQueue(guildID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	c.songQueues[guildID] = make([]audio.Track, 0)
-	
-	if player, ok := c.players[guildID]; ok {
-		player.ClearQueue()
 	}
 }
 

@@ -113,6 +113,9 @@ func (rs *RadioStreamer) Start() {
 	rs.isActive = true
 	rs.mu.Unlock()
 	
+	// Stop any currently playing music
+	rs.client.StopAllPlayback()
+	
 	go rs.streamLoop()
 }
 

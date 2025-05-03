@@ -1,0 +1,71 @@
+package discord
+
+import (
+	"strings"
+
+	"github.com/bwmarrin/discordgo"
+	"quidque.com/discord-musican/internal/logger"
+)
+
+// handleComponentInteraction handles all component interactions like buttons
+func (c *Client) handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Only process component interactions
+	if i.Type != discordgo.InteractionMessageComponent {
+		return
+	}
+	
+	// Register activity
+	c.StartActivity()
+	
+	// Extract the component type and custom ID
+	customID := i.MessageComponentData().CustomID
+	
+	// Get the handler prefix (everything before the first colon)
+	var handlerPrefix string
+	if idx := strings.Index(customID, ":"); idx != -1 {
+		handlerPrefix = customID[:idx]
+	} else {
+		handlerPrefix = customID
+	}
+	
+	// Find the appropriate handler
+	handler, exists := c.componentHandlers[handlerPrefix]
+	if !exists {
+		logger.WarnLogger.Printf("No handler for component with prefix: %s", handlerPrefix)
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Unknown component interaction.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+	
+	// Call the handler
+	handler(s, i)
+}
+
+// Connect also starts the search cache cleanup
+func (c *Client) Connect() error {
+	err := c.session.Open()
+	if err != nil {
+		return err
+	}
+	
+	// Test UDS connection
+	err = c.udsClient.Ping()
+	if err != nil {
+		logger.WarnLogger.Printf("Failed to ping downloader service: %v", err)
+		logger.WarnLogger.Println("Make sure the downloader service is running!")
+	} else {
+		logger.InfoLogger.Println("Successfully connected to downloader service")
+	}
+	
+	c.startIdleChecker()
+	c.CleanupSearchCache() // Start the search cache cleanup
+	
+	go c.startIdleMode()
+	
+	return c.RefreshSlashCommands()
+}
