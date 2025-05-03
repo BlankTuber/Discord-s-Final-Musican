@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
 	"time"
 
 	"quidque.com/discord-musican/internal/audio"
@@ -205,6 +206,14 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 	
 	if data, ok := response.Data["filename"].(string); ok {
 		track.FilePath = data
+		// Validate file path
+		if track.FilePath != "" {
+			if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+				logger.WarnLogger.Printf("UDS: File path exists in response but file not found: %s", track.FilePath)
+			}
+		} else {
+			logger.WarnLogger.Println("UDS: Empty file path received in response")
+		}
 	}
 	
 	if data, ok := response.Data["duration"].(float64); ok {
@@ -224,7 +233,9 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 	}
 	
 	track.DownloadStatus = "completed"
-	logger.InfoLogger.Printf("UDS: Track processed - Title: %s, Duration: %d", track.Title, track.Duration)
+	
+	// Log important track info
+	logger.InfoLogger.Printf("UDS: Track processed - Title: %s, FilePath: %s", track.Title, track.FilePath)
 	
 	return track, nil
 }
@@ -269,19 +280,6 @@ func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, max
 		count := int(countValue)
 		logger.InfoLogger.Printf("UDS: Playlist has %d tracks", count)
 		tracks = make([]*audio.Track, 0, count)
-		
-		if count > 0 && response.Data["items"] == nil {
-			logger.WarnLogger.Printf("UDS: Playlist has count but no items data")
-			for i := 0; i < count; i++ {
-				track := &audio.Track{
-					Title:         fmt.Sprintf("Track %d from playlist", i+1),
-					URL:           url,
-					RequestedAt:   time.Now().Unix(),
-					DownloadStatus: "completed",
-				}
-				tracks = append(tracks, track)
-			}
-		}
 	}
 	
 	if itemsData, ok := response.Data["items"].([]interface{}); ok {
@@ -296,10 +294,24 @@ func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, max
 				
 				if data, ok := item["title"].(string); ok {
 					track.Title = data
+				} else {
+					logger.WarnLogger.Printf("UDS: Missing title for playlist item %d", i)
+					track.Title = fmt.Sprintf("Unknown Track %d", i+1)
 				}
 				
-				if data, ok := item["filename"].(string); ok {
+				// Important: File path validation
+				if data, ok := item["filename"].(string); ok && data != "" {
 					track.FilePath = data
+					// Check if file exists
+					if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+						logger.WarnLogger.Printf("UDS: File not found for '%s': %s", track.Title, track.FilePath)
+						// Skip this track
+						continue
+					}
+				} else {
+					logger.WarnLogger.Printf("UDS: Missing file path for '%s'", track.Title)
+					// Skip this track without file path
+					continue
 				}
 				
 				if data, ok := item["duration"].(float64); ok {
@@ -314,20 +326,23 @@ func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, max
 					track.ThumbnailURL = data
 				}
 				
-				logger.DebugLogger.Printf("UDS: Playlist item %d - %s", i, track.Title)
+				logger.InfoLogger.Printf("UDS: Adding playlist item %d - %s (%s)", i, track.Title, track.FilePath)
 				tracks = append(tracks, track)
 			}
 		}
 	}
 	
-	if len(tracks) == 0 {
-		logger.ErrorLogger.Printf("UDS: No tracks found in playlist")
-		return nil, errors.New("no tracks found in playlist")
+	validCount := len(tracks)
+	logger.InfoLogger.Printf("UDS: Found %d valid tracks with existing files", validCount)
+	
+	if validCount == 0 {
+		logger.ErrorLogger.Printf("UDS: No valid tracks found in playlist")
+		return nil, errors.New("no valid tracks found in playlist")
 	}
 	
-	logger.InfoLogger.Printf("UDS: Returning %d tracks from playlist", len(tracks))
 	return tracks, nil
 }
+
 
 func (c *Client) Search(query string, platform string, limit int, includeLive bool) ([]*audio.Track, error) {
 	logger.InfoLogger.Printf("UDS: Searching for %s on %s (limit: %d)", query, platform, limit)

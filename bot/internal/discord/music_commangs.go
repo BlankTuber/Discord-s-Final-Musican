@@ -2,6 +2,7 @@ package discord
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -130,7 +131,6 @@ func (c *PlaylistCommand) Options() []*discordgo.ApplicationCommandOption {
 		},
 	}
 }
-
 func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -196,12 +196,25 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	}
 	
 	// Add tracks one by one with proper queue management
-	for idx, track := range tracks {
+	validTracks := 0
+	for _, track := range tracks {
+		// Skip tracks without file paths
+		if track.FilePath == "" {
+			logger.WarnLogger.Printf("Skipping track without file path: %s", track.Title)
+			continue
+		}
+		
+		// Ensure file exists
+		if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+			logger.WarnLogger.Printf("Skipping track with missing file: %s (%s)", track.Title, track.FilePath)
+			continue
+		}
+		
 		track.Requester = i.Member.User.Username
 		track.RequestedAt = time.Now().Unix()
 		
 		// For first track, add it directly and start player
-		if idx == 0 {
+		if validTracks == 0 {
 			client.AddTrackToQueue(i.GuildID, track)
 			logger.InfoLogger.Printf("First track from playlist added: %s", track.Title)
 		} else {
@@ -209,10 +222,18 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 			client.QueueTrackWithoutStarting(i.GuildID, track)
 			logger.InfoLogger.Printf("Additional track from playlist queued: %s", track.Title)
 		}
+		validTracks++
+	}
+	
+	if validTracks == 0 {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ No valid tracks found in the playlist. Files may be missing or corrupted."),
+		})
+		return
 	}
 	
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(fmt.Sprintf("✅ Added %d songs from playlist to the queue!", len(tracks))),
+		Content: stringPtr(fmt.Sprintf("✅ Added %d songs from playlist to the queue!", validTracks)),
 	})
 }
 

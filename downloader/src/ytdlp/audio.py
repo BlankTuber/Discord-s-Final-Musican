@@ -19,9 +19,9 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 'duration': song['duration'],
                 'file_size': song['file_size'],
                 'platform': song['platform'],
-                'artist': song.get('artist', ''),
-                'thumbnail_url': song.get('thumbnail_url', ''),
-                'is_stream': song.get('is_stream', False),
+                'artist': song['artist'] if 'artist' in song else '',
+                'thumbnail_url': song['thumbnail_url'] if 'thumbnail_url' in song else '',
+                'is_stream': bool(song['is_stream']) if 'is_stream' in song else False,
                 'skipped': True
             }
             

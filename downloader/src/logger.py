@@ -7,7 +7,8 @@ class ColoredLogger:
     RED = "\033[31m"
     GREEN = "\033[32m"
     YELLOW = "\033[33m"
-    BLUE = "\033[36m"  # Cyan, more readable than blue
+    BLUE = "\033[34m"
+    CYAN = "\033[36m"
     PURPLE = "\033[35m"
     GRAY = "\033[90m"
 
@@ -36,7 +37,7 @@ class ColoredLogger:
         if self.level >= self.WARNING:
             prefix = "WARNING: "
             if self.use_colors:
-                prefix = f"{self.YELLOW}{prefix}{self.RESET}"
+                prefix = f"{self.YELLOW}{self.BOLD}{prefix}{self.RESET}"
             timestamp = self.format_timestamp()
             print(f"{prefix}{timestamp} {message}", file=sys.stderr)
             
@@ -52,7 +53,7 @@ class ColoredLogger:
         if self.level >= self.DEBUG:
             prefix = "DEBUG: "
             if self.use_colors:
-                prefix = f"{self.BLUE}{prefix}{self.RESET}"
+                prefix = f"{self.CYAN}{prefix}{self.RESET}"
             timestamp = self.format_timestamp()
             print(f"{prefix}{timestamp} {message}")
 

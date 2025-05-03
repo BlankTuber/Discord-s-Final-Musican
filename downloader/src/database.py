@@ -174,7 +174,7 @@ class Database:
             
             if result:
                 # Song already in playlist, update position if needed
-                if result[0]['position'] != position:
+                if result[0][0] != position:
                     self.execute(
                         "UPDATE playlist_songs SET position = ? WHERE playlist_id = ? AND song_id = ?",
                         (position, playlist_id, song_id)
