@@ -36,7 +36,7 @@ type Response struct {
 func NewClient(socketPath string) *Client {
 	return &Client{
 		socketPath: socketPath,
-		timeout:    120 * time.Second,
+		timeout:    300 * time.Second,
 	}
 }
 
@@ -66,55 +66,78 @@ func (c *Client) SendRequest(command string, params interface{}) (*Response, err
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 	
+	logger.InfoLogger.Printf("UDS: Sending request - Command: %s, ID: %s", command, requestID)
+	
 	jsonData, err := json.Marshal(request)
 	if err != nil {
+		logger.ErrorLogger.Printf("UDS: Error marshaling request: %v", err)
 		return nil, fmt.Errorf("error marshaling request: %w", err)
 	}
 	
+	startTime := time.Now()
+	logger.InfoLogger.Printf("UDS: Connecting to socket at %s (timeout: %v)", c.socketPath, c.timeout)
 	conn, err := net.DialTimeout("unix", c.socketPath, c.timeout)
 	if err != nil {
+		logger.ErrorLogger.Printf("UDS: Error connecting to socket: %v", err)
 		return nil, fmt.Errorf("error connecting to socket: %w", err)
 	}
+	logger.InfoLogger.Printf("UDS: Connected to socket in %v", time.Since(startTime))
 	defer conn.Close()
 	
 	conn.SetDeadline(time.Now().Add(c.timeout))
+	logger.InfoLogger.Printf("UDS: Set socket deadline to %v from now", c.timeout)
 	
 	messageLen := uint32(len(jsonData))
 	lenBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lenBuf, messageLen)
 	
+	logger.InfoLogger.Printf("UDS: Sending message header (%d bytes)", len(lenBuf))
 	if _, err := conn.Write(lenBuf); err != nil {
+		logger.ErrorLogger.Printf("UDS: Error sending message length: %v", err)
 		return nil, fmt.Errorf("error sending message length: %w", err)
 	}
 	
+	logger.InfoLogger.Printf("UDS: Sending message body (%d bytes)", len(jsonData))
 	if _, err := conn.Write(jsonData); err != nil {
+		logger.ErrorLogger.Printf("UDS: Error sending message data: %v", err)
 		return nil, fmt.Errorf("error sending message data: %w", err)
 	}
 	
+	logger.InfoLogger.Printf("UDS: Waiting for response header...")
 	header := make([]byte, 4)
 	if _, err := conn.Read(header); err != nil {
+		logger.ErrorLogger.Printf("UDS: Error reading response header: %v", err)
 		return nil, fmt.Errorf("error reading response header: %w", err)
 	}
 	
 	responseLen := binary.BigEndian.Uint32(header)
+	logger.InfoLogger.Printf("UDS: Response size: %d bytes", responseLen)
 	
 	responseBuf := make([]byte, responseLen)
 	bytesRead := 0
 	
+	logger.InfoLogger.Printf("UDS: Reading response body...")
 	for bytesRead < int(responseLen) {
 		n, err := conn.Read(responseBuf[bytesRead:])
 		if err != nil {
+			logger.ErrorLogger.Printf("UDS: Error reading response data at byte %d: %v", bytesRead, err)
 			return nil, fmt.Errorf("error reading response data: %w", err)
 		}
 		bytesRead += n
+		logger.DebugLogger.Printf("UDS: Read %d bytes, total %d of %d", n, bytesRead, responseLen)
 	}
 	
 	var response Response
 	if err := json.Unmarshal(responseBuf, &response); err != nil {
+		logger.ErrorLogger.Printf("UDS: Error unmarshaling response: %v", err)
 		return nil, fmt.Errorf("error unmarshaling response: %w", err)
 	}
 	
+	elapsedTime := time.Since(startTime)
+	logger.InfoLogger.Printf("UDS: Received response - Command: %s, ID: %s, Status: %s, Time: %v", command, requestID, response.Status, elapsedTime)
+	
 	if response.Status == "error" {
+		logger.ErrorLogger.Printf("UDS: Response error: %s", response.Error)
 		return &response, errors.New(response.Error)
 	}
 	
@@ -122,20 +145,23 @@ func (c *Client) SendRequest(command string, params interface{}) (*Response, err
 }
 
 func (c *Client) Ping() error {
+	logger.InfoLogger.Println("UDS: Sending ping request")
 	params := map[string]string{
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 	
 	response, err := c.SendRequest("ping", params)
 	if err != nil {
+		logger.ErrorLogger.Printf("UDS: Ping failed: %v", err)
 		return err
 	}
 	
-	logger.DebugLogger.Printf("Ping response: %+v", response.Data)
+	logger.InfoLogger.Printf("UDS: Ping successful: %+v", response.Data)
 	return nil
 }
 
 func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLive bool) (*audio.Track, error) {
+	logger.InfoLogger.Printf("UDS: Downloading audio from %s", url)
 	params := map[string]interface{}{
 		"url":                  url,
 		"max_duration_seconds": maxDuration,
@@ -143,16 +169,27 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 		"allow_live":           allowLive,
 	}
 	
+	timeout := c.timeout
+	newTimeout := 5 * 60 * time.Second
+	logger.InfoLogger.Printf("UDS: Setting timeout from %v to %v for download", timeout, newTimeout)
+	c.SetTimeout(newTimeout)
+	defer c.SetTimeout(timeout)
+	
+	startTime := time.Now()
 	response, err := c.SendRequest("download_audio", params)
 	if err != nil {
+		logger.ErrorLogger.Printf("UDS: Download audio failed: %v", err)
 		return nil, err
 	}
+	
+	logger.InfoLogger.Printf("UDS: Download audio completed in %v", time.Since(startTime))
 	
 	if response.Status != "success" {
 		errMsg := "Download failed"
 		if response.Error != "" {
 			errMsg = response.Error
 		}
+		logger.ErrorLogger.Printf("UDS: Download error: %s", errMsg)
 		return nil, errors.New(errMsg)
 	}
 	
@@ -162,7 +199,6 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 		RequestedAt:  time.Now().Unix(),
 	}
 	
-	// Extract track info from response
 	if data, ok := response.Data["title"].(string); ok {
 		track.Title = data
 	}
@@ -175,7 +211,6 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 		track.Duration = int(data)
 	}
 	
-	// Additional fields from newer response format
 	if data, ok := response.Data["artist"].(string); ok {
 		track.ArtistName = data
 	}
@@ -189,11 +224,13 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 	}
 	
 	track.DownloadStatus = "completed"
+	logger.InfoLogger.Printf("UDS: Track processed - Title: %s, Duration: %d", track.Title, track.Duration)
 	
 	return track, nil
 }
 
 func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, maxSize int, allowLive bool) ([]*audio.Track, error) {
+	logger.InfoLogger.Printf("UDS: Downloading playlist from %s (max: %d items)", url, maxItems)
 	params := map[string]interface{}{
 		"url":                  url,
 		"max_items":            maxItems,
@@ -202,28 +239,39 @@ func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, max
 		"allow_live":           allowLive,
 	}
 	
+	timeout := c.timeout
+	newTimeout := 10 * 60 * time.Second
+	logger.InfoLogger.Printf("UDS: Setting timeout from %v to %v for playlist download", timeout, newTimeout)
+	c.SetTimeout(newTimeout)
+	defer c.SetTimeout(timeout)
+	
+	startTime := time.Now()
 	response, err := c.SendRequest("download_playlist", params)
 	if err != nil {
+		logger.ErrorLogger.Printf("UDS: Download playlist failed: %v", err)
 		return nil, err
 	}
+	
+	logger.InfoLogger.Printf("UDS: Download playlist completed in %v", time.Since(startTime))
 	
 	if response.Status != "success" {
 		errMsg := "Playlist download failed"
 		if response.Error != "" {
 			errMsg = response.Error
 		}
+		logger.ErrorLogger.Printf("UDS: Playlist download error: %s", errMsg)
 		return nil, errors.New(errMsg)
 	}
 	
 	var tracks []*audio.Track
 	
-	// Check for count field in simplified response
 	if countValue, ok := response.Data["count"].(float64); ok {
 		count := int(countValue)
+		logger.InfoLogger.Printf("UDS: Playlist has %d tracks", count)
 		tracks = make([]*audio.Track, 0, count)
 		
-		// Create minimal tracks if not detailed response
 		if count > 0 && response.Data["items"] == nil {
+			logger.WarnLogger.Printf("UDS: Playlist has count but no items data")
 			for i := 0; i < count; i++ {
 				track := &audio.Track{
 					Title:         fmt.Sprintf("Track %d from playlist", i+1),
@@ -236,9 +284,9 @@ func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, max
 		}
 	}
 	
-	// Check for detailed items response
 	if itemsData, ok := response.Data["items"].([]interface{}); ok {
-		for _, itemData := range itemsData {
+		logger.InfoLogger.Printf("UDS: Processing %d playlist items", len(itemsData))
+		for i, itemData := range itemsData {
 			if item, ok := itemData.(map[string]interface{}); ok {
 				track := &audio.Track{
 					URL:          url,
@@ -258,19 +306,31 @@ func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, max
 					track.Duration = int(data)
 				}
 				
+				if data, ok := item["artist"].(string); ok {
+					track.ArtistName = data
+				}
+				
+				if data, ok := item["thumbnail_url"].(string); ok {
+					track.ThumbnailURL = data
+				}
+				
+				logger.DebugLogger.Printf("UDS: Playlist item %d - %s", i, track.Title)
 				tracks = append(tracks, track)
 			}
 		}
 	}
 	
 	if len(tracks) == 0 {
+		logger.ErrorLogger.Printf("UDS: No tracks found in playlist")
 		return nil, errors.New("no tracks found in playlist")
 	}
 	
+	logger.InfoLogger.Printf("UDS: Returning %d tracks from playlist", len(tracks))
 	return tracks, nil
 }
 
 func (c *Client) Search(query string, platform string, limit int, includeLive bool) ([]*audio.Track, error) {
+	logger.InfoLogger.Printf("UDS: Searching for %s on %s (limit: %d)", query, platform, limit)
 	params := map[string]interface{}{
 		"query":        query,
 		"platform":     platform,
@@ -278,22 +338,35 @@ func (c *Client) Search(query string, platform string, limit int, includeLive bo
 		"include_live": includeLive,
 	}
 	
+	timeout := c.timeout
+	newTimeout := 3 * 60 * time.Second
+	logger.InfoLogger.Printf("UDS: Setting timeout from %v to %v for search", timeout, newTimeout)
+	c.SetTimeout(newTimeout)
+	defer c.SetTimeout(timeout)
+	
+	startTime := time.Now()
+	logger.InfoLogger.Printf("UDS: Starting search request...")
 	response, err := c.SendRequest("search", params)
 	if err != nil {
+		logger.ErrorLogger.Printf("UDS: Search failed: %v", err)
 		return nil, err
 	}
+	
+	logger.InfoLogger.Printf("UDS: Search completed in %v", time.Since(startTime))
 	
 	var results []interface{}
 	
 	if data, ok := response.Data["results"].([]interface{}); ok {
 		results = data
+		logger.InfoLogger.Printf("UDS: Search returned %d results", len(results))
 	} else {
+		logger.WarnLogger.Printf("UDS: Search results not in expected format")
 		return []*audio.Track{}, nil
 	}
 	
 	tracks := make([]*audio.Track, 0, len(results))
 	
-	for _, result := range results {
+	for i, result := range results {
 		if mapResult, ok := result.(map[string]interface{}); ok {
 			track := &audio.Track{
 				RequestedAt:  time.Now().Unix(),
@@ -320,9 +393,11 @@ func (c *Client) Search(query string, platform string, limit int, includeLive bo
 				track.ArtistName = data
 			}
 			
+			logger.DebugLogger.Printf("UDS: Search result %d - %s", i, track.Title)
 			tracks = append(tracks, track)
 		}
 	}
 	
+	logger.InfoLogger.Printf("UDS: Processed %d search tracks", len(tracks))
 	return tracks, nil
 }

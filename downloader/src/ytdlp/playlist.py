@@ -8,14 +8,12 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
     platform_prefix = utils.get_platform_prefix(platform)
     
     try:
-        # First, check if the playlist exists in the database
         db_playlist = None
         try:
             db_playlist = db.get_playlist_by_url(url)
         except Exception as e:
             print(f"Error checking for existing playlist: {e}")
         
-        # Get playlist info
         with yt_dlp.YoutubeDL({
             'skip_download': True, 
             'quiet': True, 
@@ -57,14 +55,11 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                     'items': []
                 }
             
-            # Check song count to warn if we're approaching limit, but don't delete anything
-            # Only janitor should delete files and DB entries
             song_count = db.get_song_count()
             if song_count + len(entries) > 500:
                 print(f"Warning: Adding {len(entries)} songs would exceed the limit of 500 (current count: {song_count}).")
                 print("The janitor will clean up old songs on its next run.")
             
-            # Create playlist record in database ONLY if we successfully download at least one song
             db_playlist_id = None
             if db_playlist:
                 db_playlist_id = db_playlist['id']
@@ -81,8 +76,8 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                     print(f"Error creating playlist in database: {e}")
             
             successful_downloads = 0
+            first_track = None
             
-            # Process each entry in the playlist
             for i, entry in enumerate(entries):
                 if not entry or not entry.get('id'):
                     print(f"Skipping unavailable playlist item")
@@ -93,7 +88,6 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                 
                 print(f"Processing item {i+1}/{len(entries)}: {entry.get('title', 'Unknown')}")
                 
-                # Use the audio download function with return_existing=True to avoid duplicating code
                 try:
                     result = audio.download(
                         video_url, 
@@ -117,11 +111,9 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                         })
                         continue
                     
-                    # Add song to playlist if we have playlist ID
                     if db_playlist_id and 'id' in result:
                         song_id = result['id']
                         try:
-                            # Check if song is already in playlist
                             position_result = db.query(
                                 "SELECT position FROM playlist_songs WHERE playlist_id = ? AND song_id = ?",
                                 (db_playlist_id, song_id)
@@ -137,6 +129,9 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                     
                     successful_downloads += 1
                     results.append(result)
+                    
+                    if i == 0 and not first_track:
+                        first_track = result
                 
                 except Exception as e:
                     print(f"Error processing playlist item {video_url}: {e}")
@@ -150,7 +145,6 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                         'error': str(e)
                     })
             
-            # Wait a moment to ensure all database operations are complete
             time.sleep(0.5)
             
             return {
@@ -158,7 +152,8 @@ def download(url, download_path, db, max_items=None, max_duration_seconds=None, 
                 'playlist_url': url,
                 'count': len(results),
                 'items': results,
-                'successful_downloads': successful_downloads
+                'successful_downloads': successful_downloads,
+                'first_track': first_track
             }
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e).lower()

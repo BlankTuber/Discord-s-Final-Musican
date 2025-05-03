@@ -7,14 +7,15 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"quidque.com/discord-musican/internal/logger"
 )
 
 const (
-	DefaultMaxDuration     = 600  // 10 minutes
-	DefaultMaxSize         = 50   // 50 MB
-	DefaultPlaylistMax     = 10   // Default max playlist items
-	DefaultPlaylistMaxOpt  = 20   // Max allowed playlist items
-	DefaultSearchCount     = 5    // 5 results
+	DefaultMaxDuration     = 600  
+	DefaultMaxSize         = 50   
+	DefaultPlaylistMax     = 10   
+	DefaultPlaylistMaxOpt  = 20   
+	DefaultSearchCount     = 5    
 	DefaultSearchPlatform  = "youtube"
 )
 
@@ -69,7 +70,6 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		return
 	}
 	
-	// When someone manually plays a song, disable idle mode
 	client.DisableIdleMode()
 	
 	err = client.JoinVoiceChannel(i.GuildID, channelID)
@@ -84,7 +84,6 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		Content: stringPtr("⏳ Downloading song..."),
 	})
 	
-	// Use the updated UDS client to get track directly
 	track, err := client.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -96,10 +95,8 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	track.Requester = i.Member.User.Username
 	track.RequestedAt = time.Now().Unix()
 	
-	// Save the track to queue and start playing
 	client.AddTrackToQueue(i.GuildID, track)
 	
-	// Update the response message
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(fmt.Sprintf("✅ Added to queue: **%s**", track.Title)),
 	})
@@ -155,7 +152,20 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 	
-	// When someone manually plays a song, disable idle mode
+	// Stop radio explicitly when a playlist is requested
+	client.mu.Lock()
+	isInIdleMode := client.isInIdleMode
+	radioStreamer := client.radioStreamer
+	client.isInIdleMode = false
+	client.mu.Unlock()
+	
+	// Stop radio before processing the playlist
+	if isInIdleMode && radioStreamer != nil {
+		logger.InfoLogger.Println("Stopping radio before playlist playback")
+		radioStreamer.Stop()
+	}
+	
+	// Continue with idle mode disabling
 	client.DisableIdleMode()
 	
 	err = client.JoinVoiceChannel(i.GuildID, channelID)
@@ -170,7 +180,6 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		Content: stringPtr("⏳ Processing playlist... This might take a while."),
 	})
 	
-	// Use the updated UDS client to get tracks directly
 	tracks, err := client.udsClient.DownloadPlaylist(url, maxItems, DefaultMaxDuration, DefaultMaxSize, false)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -179,20 +188,34 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 	
-	// Set requester for all tracks
-	for _, track := range tracks {
+	if len(tracks) == 0 {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ No playable tracks found in the playlist."),
+		})
+		return
+	}
+	
+	// Add tracks one by one with proper queue management
+	for idx, track := range tracks {
 		track.Requester = i.Member.User.Username
 		track.RequestedAt = time.Now().Unix()
 		
-		// Add tracks to queue
-		client.AddTrackToQueue(i.GuildID, track)
+		// For first track, add it directly and start player
+		if idx == 0 {
+			client.AddTrackToQueue(i.GuildID, track)
+			logger.InfoLogger.Printf("First track from playlist added: %s", track.Title)
+		} else {
+			// For subsequent tracks, ensure they're just queued, not played immediately
+			client.QueueTrackWithoutStarting(i.GuildID, track)
+			logger.InfoLogger.Printf("Additional track from playlist queued: %s", track.Title)
+		}
 	}
 	
-	// Update the response message
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(fmt.Sprintf("✅ Added %d songs from playlist to the queue!", len(tracks))),
 	})
 }
+
 
 type SearchCommand struct{}
 
@@ -233,12 +256,10 @@ func (c *SearchCommand) Options() []*discordgo.ApplicationCommandOption {
 			},
 		},
 		{
-			// Changed type to String
 			Type:        discordgo.ApplicationCommandOptionString,
 			Name:        "count",
-			Description: "Number of results (1-5) - Enter as text", // Updated description
+			Description: "Number of results (1-5) - Enter as text",
 			Required:    false,
-			// Removed MinValue and MaxValue as they are not applicable to String type
 		},
 	}
 }
@@ -252,34 +273,28 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 	query := options[0].StringValue()
 
 	platform := DefaultSearchPlatform
-	// Find the platform option
-	for _, opt := range options[1:] { // Start from the second option
+	for _, opt := range options[1:] {
 		if opt.Name == "platform" {
 			platform = opt.StringValue()
 			break
 		}
 	}
 
-
 	limit := DefaultSearchCount
-	// Find the count option
-	for _, opt := range options[1:] { // Start from the second option
+	for _, opt := range options[1:] {
 		if opt.Name == "count" {
 			countStr := opt.StringValue()
-			if countStr != "" { // Only attempt conversion if string is not empty
+			if countStr != "" {
 				parsedCount, err := strconv.Atoi(countStr)
 				if err != nil {
-					// Handle invalid input - use default count and inform user
 					s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 						Content: stringPtr(fmt.Sprintf("⚠️ Invalid number provided for count ('%s'). Using default count of %d.", countStr, DefaultSearchCount)),
 					})
 					limit = DefaultSearchCount
 				} else {
-					// Validate the parsed integer is within the desired range (1-5)
 					if parsedCount >= 1 && parsedCount <= 5 {
 						limit = parsedCount
 					} else {
-						// Handle out of range input
 						s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 							Content: stringPtr(fmt.Sprintf("⚠️ Count must be between 1 and 5. Using default count of %d.", DefaultSearchCount)),
 						})
@@ -287,19 +302,22 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 					}
 				}
 			}
-			break // Found the count option, no need to continue loop
+			break
 		}
 	}
 
-
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+	logger.InfoLogger.Printf("Sending search edit to show searching status")
+	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr("🔍 Searching for: " + query + "..."),
 	})
+	if err != nil {
+		logger.ErrorLogger.Printf("Error updating search status: %v", err)
+	}
 
-	// Search for tracks
-	// Assuming udsClient.Search takes int for limit
+	logger.InfoLogger.Printf("Starting search for '%s' on %s with limit %d", query, platform, limit)
 	tracks, err := client.udsClient.Search(query, platform, limit, false)
 	if err != nil {
+		logger.ErrorLogger.Printf("Search failed: %v", err)
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr(fmt.Sprintf("❌ Search failed: %s", err.Error())),
 		})
@@ -307,69 +325,90 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 
 	if len(tracks) == 0 {
+		logger.InfoLogger.Printf("No search results found for query: %s", query)
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr(fmt.Sprintf("❌ No results found for \"%s\"", query)),
 		})
 		return
 	}
 
-	// Create a unique session ID for these results
+	logger.InfoLogger.Printf("Found %d search results for '%s'", len(tracks), query)
+
 	userID := i.Member.User.ID
 	guildID := i.GuildID
 
-	// Store search results in cache
-	// Ensure your client.mu is properly initialized (e.g., sync.Mutex)
-	// client.mu.Lock()
-	sessionID := FormatSearchButtonID(0, guildID, userID)
-	sessionID = sessionID[:strings.LastIndex(sessionID, ":")]
+	sessionID := fmt.Sprintf("search:%s:%s", guildID, userID)
+	logger.InfoLogger.Printf("Caching search results with session ID: %s", sessionID)
+	
+	client.mu.Lock()
 	client.searchResultsCache[sessionID] = tracks
-	// client.mu.Unlock()
+	client.mu.Unlock()
 
-
-	// Build the response message with buttons
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("🔍 **Search Results for \"%s\":**\n\n", query))
 
-	// Create component rows with buttons for each track
 	var components []discordgo.MessageComponent
 
-	for i, track := range tracks {
-		// Format duration
+	for idx, track := range tracks {
 		minutes := track.Duration / 60
 		seconds := track.Duration % 60
 		durationStr := fmt.Sprintf("[%d:%02d]", minutes, seconds)
 
-		// Add track info to message
-		sb.WriteString(fmt.Sprintf("%d. **%s** %s\n", i+1, track.Title, durationStr))
+		sb.WriteString(fmt.Sprintf("%d. **%s** %s\n", idx+1, track.Title, durationStr))
 		if track.ArtistName != "" {
 			sb.WriteString(fmt.Sprintf("   By: %s\n", track.ArtistName))
 		}
 		sb.WriteString("\n")
 
-		// Create a button for this track
-		customID := FormatSearchButtonID(i, guildID, userID)
+		customID := FormatSearchButtonID(idx, guildID, userID)
+		logger.InfoLogger.Printf("Creating button with ID: %s", customID)
+		
+		buttonLabel := fmt.Sprintf("%d. %s", idx+1, track.Title)
+		if len(buttonLabel) > 80 {
+			buttonLabel = buttonLabel[:77] + "..."
+		}
+		
 		button := discordgo.Button{
-			Label:    fmt.Sprintf("%d. %s", i+1, track.Title),
+			Label:    buttonLabel,
 			Style:    discordgo.PrimaryButton,
 			CustomID: customID,
 		}
 
-		// Create action row with the button
 		actionRow := discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{button},
 		}
 
-		// Add the action row to components
 		components = append(components, actionRow)
 	}
 
 	sb.WriteString("Click a button below to select and play a track.")
-
-	// Edit the response with search results and buttons
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content:    stringPtr(sb.String()),
+	
+	logger.InfoLogger.Printf("Updating message with %d search results and %d components", len(tracks), len(components))
+	
+	messageContent := sb.String()
+	logger.DebugLogger.Printf("Message content: %s", messageContent)
+	logger.DebugLogger.Printf("Number of components: %d", len(components))
+	
+	// Try to edit the message with content and components
+	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content:    stringPtr(messageContent),
 		Components: &components,
 	})
+	
+	if err != nil {
+		logger.ErrorLogger.Printf("Error updating search results: %v", err)
+		
+		// Fallback approach: just send the content without components
+		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr(messageContent + "\n\n❌ Error displaying buttons. Please try again or use /play command directly."),
+		})
+		
+		if err != nil {
+			logger.ErrorLogger.Printf("Error with fallback message too: %v", err)
+		}
+	} else {
+		logger.InfoLogger.Printf("Successfully updated search results with buttons")
+	}
 }
 
 type QueueCommand struct{}
@@ -780,7 +819,7 @@ func (c *RemoveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 	})
 	
 	options := i.ApplicationCommandData().Options
-	position := int(options[0].IntValue()) - 1  // Convert to 0-based
+	position := int(options[0].IntValue()) - 1
 	
 	removed, err := client.RemoveFromQueue(i.GuildID, position)
 	if err != nil {

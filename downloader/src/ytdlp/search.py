@@ -1,7 +1,12 @@
 import yt_dlp
+import time
+import traceback
 from ytdlp import utils
 
 def find(query, platform='youtube', limit=5, include_live=False):
+    print(f"SEARCH: Starting search for '{query}' on platform '{platform}', limit: {limit}")
+    start_time = time.time()
+    
     search_url = None
     allowed_platform = None
     
@@ -23,8 +28,10 @@ def find(query, platform='youtube', limit=5, include_live=False):
         search_url = f'ytsearch{limit*2}:{query} site:music.youtube.com'
         allowed_platform = 'https://music.youtube.com'
     else:
-        print(f"Search not supported for platform: {platform}")
+        print(f"SEARCH: Search not supported for platform: {platform}")
         return None
+    
+    print(f"SEARCH: Using search URL: {search_url}")
     
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -36,29 +43,55 @@ def find(query, platform='youtube', limit=5, include_live=False):
     }
     
     try:
+        print("SEARCH: Starting yt-dlp extraction")
+        ytdlp_start = time.time()
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            print("SEARCH: Calling extract_info...")
             info = ydl.extract_info(search_url, download=False)
             
-            if not info or not info.get('entries'):
-                print(f"No results found for query: {query}")
+            ytdlp_elapsed = time.time() - ytdlp_start
+            print(f"SEARCH: yt-dlp extraction completed in {ytdlp_elapsed:.2f} seconds")
+            
+            if not info:
+                print("SEARCH: No info returned from extract_info")
+                return None
+                
+            if not info.get('entries'):
+                print(f"SEARCH: No results found for query: {query}")
                 return None
             
+            entries = info.get('entries', [])
+            print(f"SEARCH: Got {len(entries)} initial entries")
+            
             results = []
-            for entry in info.get('entries', []):
+            processed = 0
+            skipped_live = 0
+            
+            for entry in entries:
                 if not entry:
-                    continue
-                    
-                if not include_live and entry.get('duration') is None:
-                    print(f"Skipping live stream: {entry.get('title', 'Unknown')}")
+                    print("SEARCH: Skipping None entry")
                     continue
                 
-                if not include_live and entry.get('duration') is None and 'live' in entry.get('title', '').lower():
-                    print(f"Skipping likely live stream: {entry.get('title', 'Unknown')}")
+                processed += 1
+                    
+                is_live = entry.get('duration') is None
+                title = entry.get('title', 'Unknown')
+                
+                if not include_live and is_live:
+                    print(f"SEARCH: Skipping live stream: {title}")
+                    skipped_live += 1
+                    continue
+                
+                if not include_live and is_live and 'live' in title.lower():
+                    print(f"SEARCH: Skipping likely live stream by title: {title}")
+                    skipped_live += 1
                     continue
                     
-                if not include_live and ('radio' in entry.get('title', '').lower() or '24/7' in entry.get('title', '')):
-                    if entry.get('duration') is None or entry.get('duration', 0) > 12 * 3600:
-                        print(f"Skipping likely radio stream: {entry.get('title', 'Unknown')}")
+                if not include_live and ('radio' in title.lower() or '24/7' in title.lower()):
+                    if is_live or entry.get('duration', 0) > 12 * 3600:
+                        print(f"SEARCH: Skipping likely radio stream: {title}")
+                        skipped_live += 1
                         continue
                 
                 # Extract thumbnail URL properly
@@ -72,8 +105,10 @@ def find(query, platform='youtube', limit=5, include_live=False):
                 # Get uploader information
                 uploader = entry.get('uploader', entry.get('channel', 'Unknown'))
                 
+                print(f"SEARCH: Adding result {len(results)+1}: {title}")
+                
                 results.append({
-                    'title': entry.get('title', 'Unknown'),
+                    'title': title,
                     'url': url,
                     'duration': entry.get('duration'),
                     'uploader': uploader,
@@ -86,8 +121,14 @@ def find(query, platform='youtube', limit=5, include_live=False):
                 if len(results) >= limit:
                     break
             
+            elapsed = time.time() - start_time
+            print(f"SEARCH: Finished processing in {elapsed:.2f} seconds")
+            print(f"SEARCH: Processed {processed} entries, skipped {skipped_live} live streams, returning {len(results)} results")
+            
             return results
             
     except Exception as e:
-        print(f"Error searching: {e}")
+        elapsed = time.time() - start_time
+        print(f"SEARCH: Error after {elapsed:.2f} seconds: {e}")
+        print(f"SEARCH: Traceback: {traceback.format_exc()}")
         return None
