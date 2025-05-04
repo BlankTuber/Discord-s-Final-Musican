@@ -42,50 +42,91 @@ func (c *Client) AddTrackToQueue(guildID string, track *audio.Track) {
 }
 
 
-// GetQueueState returns the current queue and currently playing track
 func (c *Client) GetQueueState(guildID string) ([]*audio.Track, *audio.Track) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	var queue []*audio.Track
-	if q, ok := c.songQueues[guildID]; ok {
-		queue = make([]*audio.Track, len(q))
-		copy(queue, q)
-	} else {
-		// Try to load from database
-		if c.dbManager != nil {
-			var err error
-			queue, err = c.dbManager.GetQueue(guildID)
-			if err != nil {
-				logger.ErrorLogger.Printf("Error loading queue from database: %v", err)
-				queue = make([]*audio.Track, 0)
-			}
-
-			// Cache the queue
-			c.songQueues[guildID] = make([]*audio.Track, len(queue))
-			copy(c.songQueues[guildID], queue)
+	if c.dbManager == nil {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		
+		var queue []*audio.Track
+		if q, ok := c.songQueues[guildID]; ok {
+			queue = make([]*audio.Track, len(q))
+			copy(queue, q)
 		} else {
 			queue = make([]*audio.Track, 0)
 		}
+		
+		var currentTrack *audio.Track
+		if player, ok := c.players[guildID]; ok {
+			currentTrack = player.GetCurrentTrack()
+		}
+		
+		return queue, currentTrack
 	}
-
+	
+	// Use database as source of truth
+	queue, err := c.dbManager.GetQueue(guildID, false) // Get only unplayed items
+	if err != nil {
+		logger.ErrorLogger.Printf("Error getting queue from database: %v", err)
+		queue = make([]*audio.Track, 0)
+	}
+	
+	// Try to get the currently playing track from the player first
 	var currentTrack *audio.Track
+	c.mu.RLock()
 	if player, ok := c.players[guildID]; ok {
 		currentTrack = player.GetCurrentTrack()
 	}
-
+	c.mu.RUnlock()
+	
+	// If no track is playing, check if we have one in the database
+	if currentTrack == nil {
+		dbTrack, err := c.dbManager.GetCurrentPlayingTrack(guildID)
+		if err != nil {
+			logger.ErrorLogger.Printf("Error getting current track from database: %v", err)
+		} else {
+			currentTrack = dbTrack
+		}
+	}
+	
 	return queue, currentTrack
 }
 
-// GetCurrentTrack returns the currently playing track
-func (c *Client) GetCurrentTrack(guildID string) *audio.Track {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if player, ok := c.players[guildID]; ok {
-		return player.GetCurrentTrack()
+func (c *Client) GetQueueHistory(guildID string) ([]*audio.Track, error) {
+	if c.dbManager == nil {
+		return nil, fmt.Errorf("database manager not available")
 	}
+	
+	tracks, err := c.dbManager.GetQueue(guildID, true) // Get all items including played
+	if err != nil {
+		return nil, fmt.Errorf("error getting queue history: %w", err)
+	}
+	
+	return tracks, nil
+}
 
+
+func (c *Client) GetCurrentTrack(guildID string) *audio.Track {
+	// First try to get from memory (for active playback)
+	c.mu.RLock()
+	if player, ok := c.players[guildID]; ok && player != nil {
+		track := player.GetCurrentTrack()
+		if track != nil {
+			c.mu.RUnlock()
+			return track
+		}
+	}
+	c.mu.RUnlock()
+	
+	// If not playing, try to get from database
+	if c.dbManager != nil {
+		track, err := c.dbManager.GetCurrentPlayingTrack(guildID)
+		if err != nil {
+			logger.ErrorLogger.Printf("Error getting current track from database: %v", err)
+		} else if track != nil {
+			return track
+		}
+	}
+	
 	return nil
 }
 
@@ -269,7 +310,6 @@ func (c *Client) handlePlayerEvent(event string, data interface{}) {
     }
 }
 
-// SyncQueueWithDatabase loads the queue from the database if it's not in memory
 func (c *Client) SyncQueueWithDatabase(guildID string) error {
 	if c.dbManager == nil {
 		return errors.New("database manager not available")
@@ -283,8 +323,8 @@ func (c *Client) SyncQueueWithDatabase(guildID string) error {
 		return nil
 	}
 
-	// Load queue from database
-	queue, err := c.dbManager.GetQueue(guildID)
+	// Load queue from database - only unplayed items
+	queue, err := c.dbManager.GetQueue(guildID, false)
 	if err != nil {
 		return fmt.Errorf("error loading queue from database: %w", err)
 	}
@@ -292,6 +332,7 @@ func (c *Client) SyncQueueWithDatabase(guildID string) error {
 	c.songQueues[guildID] = queue
 	return nil
 }
+
 
 func (c *Client) BatchAddToQueue(guildID string, tracks []*audio.Track) int {
 	c.mu.Lock()

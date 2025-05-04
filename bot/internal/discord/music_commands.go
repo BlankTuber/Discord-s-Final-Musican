@@ -33,7 +33,8 @@ func registerMusicCommands(registry *CommandRegistry) {
 	registry.Register(&PopularCommand{})
 	registry.Register(&RecentCommand{})
 	registry.Register(&RemoveCommand{})
-	registry.Register(&RestartCommand{})
+	registry.Register(&StartCommand{})
+	registry.Register(&PauseCommand{})
 }
 
 type PlayCommand struct{}
@@ -632,6 +633,10 @@ func (c *NowPlayingCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 	content := fmt.Sprintf("🎵 **Now Playing:** %s [%d:%02d]\n", 
 		currentTrack.Title, minutes, seconds)
 	
+	if currentTrack.URL != "" {
+		content += fmt.Sprintf("🔗 **Link:** %s\n", currentTrack.URL)
+	}
+	
 	if currentTrack.ArtistName != "" {
 		content += fmt.Sprintf("👤 **Artist:** %s\n", currentTrack.ArtistName)
 	}
@@ -658,6 +663,7 @@ func (c *NowPlayingCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		})
 	}
 }
+
 
 type VolumeCommand struct{}
 
@@ -838,17 +844,23 @@ func (c *RecentCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 		sb.WriteString(fmt.Sprintf("%d. **%s** [%d:%02d]\n", 
 			i+1, track.Title, minutes, seconds))
 		
-		if track.ArtistName != "" {
-			sb.WriteString(fmt.Sprintf("   Artist: %s\n", track.ArtistName))
+		// Add URL to the output
+		if track.URL != "" {
+			sb.WriteString(fmt.Sprintf("   🔗 %s\n", track.URL))
 		}
+		
+		if track.ArtistName != "" {
+			sb.WriteString(fmt.Sprintf("   👤 Artist: %s\n", track.ArtistName))
+		}
+		
+		sb.WriteString("\n")
 	}
-	
-	sb.WriteString("\nUse `/play` with the song URL to play one of these tracks.")
 	
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(sb.String()),
 	})
 }
+
 
 type RemoveCommand struct{}
 
@@ -900,21 +912,21 @@ func (c *RemoveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 	})
 }
 
-type RestartCommand struct{}
+type StartCommand struct{}
 
-func (c *RestartCommand) Name() string {
-	return "restart"
+func (c *StartCommand) Name() string {
+	return "start"
 }
 
-func (c *RestartCommand) Description() string {
-	return "Restart the queue from the beginning"
+func (c *StartCommand) Description() string {
+	return "Start playback from the queue"
 }
 
-func (c *RestartCommand) Options() []*discordgo.ApplicationCommandOption {
+func (c *StartCommand) Options() []*discordgo.ApplicationCommandOption {
 	return []*discordgo.ApplicationCommandOption{}
 }
 
-func (c *RestartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
+func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
     s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
         Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
     })
@@ -924,7 +936,7 @@ func (c *RestartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionC
 
     if len(queue) == 0 && currentTrack == nil {
         s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-            Content: stringPtr("❌ Queue is empty. Nothing to restart."),
+            Content: stringPtr("❌ Queue is empty. Nothing to start."),
         })
         return
     }
@@ -961,6 +973,47 @@ func (c *RestartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionC
     client.BatchAddTracksToQueue(i.GuildID, allTracks)
 
     s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-        Content: stringPtr("🔁 Queue restarted from the beginning!"),
+        Content: stringPtr("▶️ Queue started!"),
     })
+}
+
+// Add PauseCommand
+type PauseCommand struct{}
+
+func (c *PauseCommand) Name() string {
+	return "pause"
+}
+
+func (c *PauseCommand) Description() string {
+	return "Pause the currently playing song"
+}
+
+func (c *PauseCommand) Options() []*discordgo.ApplicationCommandOption {
+	return []*discordgo.ApplicationCommandOption{}
+}
+
+func (c *PauseCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: "⏸️ Pausing playback...",
+		},
+	})
+	
+	client.mu.RLock()
+	player, exists := client.players[i.GuildID]
+	client.mu.RUnlock()
+	
+	if !exists || player == nil || player.GetState() != audio.StatePlaying {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ No song is currently playing."),
+		})
+		return
+	}
+	
+	player.Pause()
+	
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("⏸️ Playback paused. Use `/start` to resume."),
+	})
 }

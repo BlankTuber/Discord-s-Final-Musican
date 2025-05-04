@@ -96,6 +96,27 @@ func (p *Player) GetCurrentTrack() *Track {
 	return p.currentTrack
 }
 
+func (p *Player) Pause() {
+    p.Lock()
+    defer p.Unlock()
+    
+    if p.state == StatePlaying {
+        // Stop the current playback
+        select {
+        case p.stopChan <- true:
+            // Message sent successfully
+        default:
+            // Channel is full, create a new one
+            p.stopChan = make(chan bool, 1)
+            p.stopChan <- true
+        }
+        
+        p.state = StatePaused
+        logger.InfoLogger.Println("Playback paused")
+    }
+}
+
+
 func (p *Player) Skip() {
     p.Lock()
     if p.state != StateStopped {

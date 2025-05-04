@@ -238,7 +238,7 @@ func (m *Manager) GetRecentTracks(limit int) ([]*audio.Track, error) {
 	return tracks, nil
 }
 
-func (m *Manager) GetQueue(guildID string) ([]*audio.Track, error) {
+func (m *Manager) GetQueue(guildID string, includePlayed bool) ([]*audio.Track, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -252,12 +252,19 @@ func (m *Manager) GetQueue(guildID string) ([]*audio.Track, error) {
 		return nil, fmt.Errorf("error querying queue: %w", err)
 	}
 
+	// Modify query to include played items if requested
 	queryItems := `
-		SELECT qi.title, qi.url, qi.duration, qi.requester, qi.requested_at, s.file_path, s.thumbnail_url, s.artist, s.is_stream
+		SELECT qi.title, qi.url, qi.duration, qi.requester, qi.requested_at, s.file_path, 
+			s.thumbnail_url, s.artist, s.is_stream, qi.position, qi.played
 		FROM queue_items qi
 		LEFT JOIN songs s ON qi.song_id = s.id
-		WHERE qi.queue_id = ? AND qi.played = 0
-		ORDER BY qi.position ASC`
+		WHERE qi.queue_id = ?`
+	
+	if !includePlayed {
+		queryItems += ` AND qi.played = 0`
+	}
+	
+	queryItems += ` ORDER BY qi.position ASC`
 
 	rows, err := m.db.Query(queryItems, queueID)
 	if err != nil {
@@ -268,10 +275,11 @@ func (m *Manager) GetQueue(guildID string) ([]*audio.Track, error) {
 	tracks := []*audio.Track{}
 	for rows.Next() {
 		var title, url, requester, filePath, thumbnailURL, artist sql.NullString
-		var duration, requestedAt sql.NullInt64
-		var isStream sql.NullBool
+		var duration, requestedAt, position sql.NullInt64
+		var isStream, played sql.NullBool
 
-		err := rows.Scan(&title, &url, &duration, &requester, &requestedAt, &filePath, &thumbnailURL, &artist, &isStream)
+		err := rows.Scan(&title, &url, &duration, &requester, &requestedAt, &filePath, 
+			&thumbnailURL, &artist, &isStream, &position, &played)
 		if err != nil {
 			logger.ErrorLogger.Printf("Error scanning queue item: %v", err)
 			continue
@@ -287,6 +295,7 @@ func (m *Manager) GetQueue(guildID string) ([]*audio.Track, error) {
 			ThumbnailURL: thumbnailURL.String,
 			ArtistName:   artist.String,
 			IsStream:     isStream.Bool,
+			Position:     int(position.Int64),
 		}
 		tracks = append(tracks, track)
 	}
@@ -297,6 +306,7 @@ func (m *Manager) GetQueue(guildID string) ([]*audio.Track, error) {
 
 	return tracks, nil
 }
+
 
 func (m *Manager) SaveQueue(guildID string, tracks []*audio.Track) error {
 	m.mu.Lock()
@@ -379,6 +389,61 @@ func (m *Manager) SaveQueue(guildID string, tracks []*audio.Track) error {
 
 	return nil
 }
+
+func (m *Manager) GetCurrentPlayingTrack(guildID string) (*audio.Track, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var queueID int64
+	queryQueue := `SELECT id FROM queues WHERE guild_id = ?`
+	err := m.db.QueryRow(queryQueue, guildID).Scan(&queueID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("error querying queue: %w", err)
+	}
+
+	// Find the most recently played track (highest position with played=1)
+	queryItems := `
+		SELECT qi.title, qi.url, qi.duration, qi.requester, qi.requested_at, s.file_path, 
+			s.thumbnail_url, s.artist, s.is_stream, qi.position
+		FROM queue_items qi
+		LEFT JOIN songs s ON qi.song_id = s.id
+		WHERE qi.queue_id = ? AND qi.played = 1
+		ORDER BY qi.position DESC
+		LIMIT 1`
+
+	var title, url, requester, filePath, thumbnailURL, artist sql.NullString
+	var duration, requestedAt, position sql.NullInt64
+	var isStream sql.NullBool
+
+	err = m.db.QueryRow(queryItems, queueID).Scan(&title, &url, &duration, &requester, &requestedAt, 
+		&filePath, &thumbnailURL, &artist, &isStream, &position)
+	
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("error querying current track: %w", err)
+	}
+
+	track := &audio.Track{
+		Title:        title.String,
+		URL:          url.String,
+		Duration:     int(duration.Int64),
+		Requester:    requester.String,
+		RequestedAt:  requestedAt.Int64,
+		FilePath:     filePath.String,
+		ThumbnailURL: thumbnailURL.String,
+		ArtistName:   artist.String,
+		IsStream:     isStream.Bool,
+		Position:     int(position.Int64),
+	}
+
+	return track, nil
+}
+
 
 func (m *Manager) MarkQueueItemPlayed(guildID string, position int) error {
 	m.mu.Lock()
