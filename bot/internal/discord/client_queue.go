@@ -225,27 +225,34 @@ func (c *Client) handlePlayerEvent(event string, data interface{}) {
 			}
 		}
 	case "track_end":
-		if track, ok := data.(*audio.Track); ok {
-			logger.InfoLogger.Printf("Finished playing track: %s", track.Title)
+        if track, ok := data.(*audio.Track); ok {
+            logger.InfoLogger.Printf("Finished playing track: %s", track.Title)
 
-			// Process the next song in the queue for this guild
-			// We need to find which guild this track was playing in
-			c.mu.RLock()
-			var targetGuildID string
-			for guildID, player := range c.players {
-				if player.GetCurrentTrack() == nil && len(c.songQueues[guildID]) > 0 {
-					targetGuildID = guildID
-					break
-				}
-			}
-			c.mu.RUnlock()
+            // Create a copy of the song queues to avoid holding the lock for too long
+            c.mu.RLock()
+            guildsToCheck := make([]string, 0, len(c.players))
+            for guildID := range c.players {
+                guildsToCheck = append(guildsToCheck, guildID)
+            }
+            c.mu.RUnlock()
 
-			if targetGuildID != "" {
-				c.mu.Lock()
-				c.startPlayer(targetGuildID)
-				c.mu.Unlock()
-			}
-		}
+            // Process each guild separately, checking if it needs the next song
+            for _, guildID := range guildsToCheck {
+                c.mu.RLock()
+                player, playerExists := c.players[guildID]
+                queueExists := len(c.songQueues[guildID]) > 0
+                c.mu.RUnlock()
+
+                if playerExists && player.GetCurrentTrack() == nil && queueExists {
+                    c.mu.Lock()
+                    if len(c.songQueues[guildID]) > 0 { // Double check queue still has songs
+                        c.startPlayer(guildID)
+                    }
+                    c.mu.Unlock()
+                    break // Found the guild that needs the next song
+                }
+            }
+        }
 	case "queue_end":
 		logger.InfoLogger.Println("Queue ended")
 		c.session.UpdateGameStatus(0, "Queue is empty | Use /play")
@@ -338,26 +345,26 @@ func (c *Client) BatchAddToQueue(guildID string, tracks []*audio.Track) int {
 }
 
 func (c *Client) BatchAddTracksToQueue(guildID string, tracks []*audio.Track) {
-    // Stop current playback once, before adding anything
-    c.StopAllPlayback()
-    
     c.mu.Lock()
     defer c.mu.Unlock()
 
-    // Make sure queue exists for this guild
     if _, ok := c.songQueues[guildID]; !ok {
         c.songQueues[guildID] = make([]*audio.Track, 0)
     }
 
-    // Add all tracks to queue at once
     c.songQueues[guildID] = append(c.songQueues[guildID], tracks...)
 
-    // Start playing only after all tracks are added
-    if len(c.songQueues[guildID]) > 0 {
+    currentlyPlaying := false
+    if player, exists := c.players[guildID]; exists && player != nil {
+        if player.GetState() == audio.StatePlaying {
+            currentlyPlaying = true
+        }
+    }
+    
+    if !currentlyPlaying && len(c.songQueues[guildID]) > 0 {
         c.startPlayer(guildID)
     }
 
-    // Save the queue to database
     if c.dbManager != nil {
         go func() {
             err := c.dbManager.SaveQueue(guildID, c.songQueues[guildID])

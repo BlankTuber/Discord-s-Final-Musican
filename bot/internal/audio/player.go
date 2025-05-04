@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -118,16 +119,17 @@ func (p *Player) Skip() {
 }
 
 func (p *Player) Stop() {
-	p.Lock()
-	if p.state != StateStopped {
-		p.skipFlag = false // Make sure skip flag is off for regular stops
-		select {
-		case p.stopChan <- true:
-		default:
-		}
-		p.state = StateStopped
-	}
-	p.Unlock()
+    p.Lock()
+    if p.state != StateStopped {
+        p.skipFlag = false // Make sure skip flag is off for regular stops
+        
+        // Close the stopChan and recreate it to ensure any waiting goroutines proceed
+        close(p.stopChan)
+        p.stopChan = make(chan bool, 1)
+        
+        p.state = StateStopped
+    }
+    p.Unlock()
 }
 
 func (p *Player) SetVolume(volume float32) {
@@ -174,125 +176,155 @@ func (p *Player) playNextTrack() {
 }
 
 func (p *Player) playTrack(track *Track) {
-	if track.FilePath == "" {
-		logger.ErrorLogger.Printf("Track has no file path: %s", track.Title)
-		go p.playNextTrack()
-		return
-	}
-	
-	// Check if file exists
-	if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
-		logger.ErrorLogger.Printf("Audio file not found: %s", track.FilePath)
-		go p.playNextTrack()
-		return
-	}
-	
-	file, err := os.Open(track.FilePath)
-	if err != nil {
-		logger.ErrorLogger.Printf("Failed to open audio file %s: %v", track.FilePath, err)
-		go p.playNextTrack()
-		return
-	}
-	defer file.Close()
-	
-	p.Lock()
-	p.stream = file
-	p.state = StatePlaying
-	stopChan := p.stopChan
-	vc := p.vc
-	volumeLevel := p.volumeLevel
-	p.Unlock()
-	
-	vc.Speaking(true)
-	defer vc.Speaking(false)
-	
-	cmd := exec.Command(
-		"ffmpeg",
-		"-i", track.FilePath,
-		"-f", "s16le",
-		"-ar", "48000",
-		"-ac", "2",
-		"-af", fmt.Sprintf("volume=%f", volumeLevel),
-		"-loglevel", "warning",
-		"pipe:1",
-	)
-	
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		logger.ErrorLogger.Printf("Failed to create stdout pipe: %v", err)
-		go p.playNextTrack()
-		return
-	}
-	
-	err = cmd.Start()
-	if err != nil {
-		logger.ErrorLogger.Printf("Failed to start ffmpeg: %v", err)
-		go p.playNextTrack()
-		return
-	}
-	
-	defer cmd.Process.Kill()
-	
-	encoder, err := gopus.NewEncoder(frameRate, channels, gopus.Audio)
-	if err != nil {
-		logger.ErrorLogger.Printf("Failed to create Opus encoder: %v", err)
-		go p.playNextTrack()
-		return
-	}
-	
-	audioBuf := make([]int16, frameSize*channels)
-	opusBuffer := make([]byte, 1000)
-	
-	playing := true
-	for playing {
-		select {
-		case <-stopChan:
-			playing = false
-		default:
-			err = binary.Read(out, binary.LittleEndian, &audioBuf)
-			if err != nil {
-				if err == io.EOF || err == io.ErrUnexpectedEOF {
-					playing = false
-					continue
-				}
-				logger.ErrorLogger.Printf("Error reading audio data: %v", err)
-				playing = false
-				continue
-			}
-			
-			opusData, err := encoder.Encode(audioBuf, frameSize, len(opusBuffer))
-			if err != nil {
-				logger.ErrorLogger.Printf("Error encoding to opus: %v", err)
-				playing = false
-				continue
-			}
-			
-			vc.OpusSend <- opusData
-		}
-	}
-	
-	p.Lock()
-	p.playbackCount++
-	p.stream = nil
-	skipFlag := p.skipFlag
-	
-	if p.state != StateStopped {
-		p.state = StateStopped
-		p.Unlock()
-		
-		for _, handler := range eventHandlers {
-			handler("track_end", track)
-		}
-		
-		// If this was a skip operation, we need to play the next track
-		if skipFlag {
-			logger.InfoLogger.Printf("Skip detected, playing next track")
-			go p.playNextTrack()
-		} else if err == io.EOF || err == io.ErrUnexpectedEOF {
-			// Only play next track automatically if this track ended naturally
-			go p.playNextTrack()
-		}
-	} else {
-		p.Unlock()
-	}
+    if track.FilePath == "" {
+        logger.ErrorLogger.Printf("Track has no file path: %s", track.Title)
+        go p.playNextTrack()
+        return
+    }
+    
+    if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+        logger.ErrorLogger.Printf("Audio file not found: %s", track.FilePath)
+        go p.playNextTrack()
+        return
+    }
+    
+    file, err := os.Open(track.FilePath)
+    if err != nil {
+        logger.ErrorLogger.Printf("Failed to open audio file %s: %v", track.FilePath, err)
+        go p.playNextTrack()
+        return
+    }
+    defer file.Close()
+    
+    p.Lock()
+    p.stream = file
+    p.state = StatePlaying
+    stopChan := p.stopChan
+    vc := p.vc
+    volumeLevel := p.volumeLevel
+    p.Unlock()
+    
+    vc.Speaking(true)
+    defer vc.Speaking(false)
+    
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+    
+    cmd := exec.CommandContext(ctx,
+        "ffmpeg",
+        "-i", track.FilePath,
+        "-f", "s16le",
+        "-ar", "48000",
+        "-ac", "2",
+        "-af", fmt.Sprintf("volume=%f", volumeLevel),
+        "-loglevel", "warning",
+        "pipe:1",
+    )
+    
+    out, err := cmd.StdoutPipe()
+    if err != nil {
+        logger.ErrorLogger.Printf("Failed to create stdout pipe: %v", err)
+        go p.playNextTrack()
+        return
+    }
+    
+    err = cmd.Start()
+    if err != nil {
+        logger.ErrorLogger.Printf("Failed to start ffmpeg: %v", err)
+        go p.playNextTrack()
+        return
+    }
+    
+    defer func() {
+        if cmd.Process != nil {
+            cmd.Process.Kill()
+        }
+    }()
+    
+    encoder, err := gopus.NewEncoder(frameRate, channels, gopus.Audio)
+    if err != nil {
+        logger.ErrorLogger.Printf("Failed to create Opus encoder: %v", err)
+        go p.playNextTrack()
+        return
+    }
+    
+    audioBuf := make([]int16, frameSize*channels)
+    opusBuffer := make([]byte, 1000)
+    
+    playing := true
+    
+    for playing {
+        select {
+        case <-stopChan:
+            playing = false
+            continue
+        default:
+            done := make(chan struct{})
+            var readErr error
+            
+            go func() {
+                readErr = binary.Read(out, binary.LittleEndian, &audioBuf)
+                close(done)
+            }()
+            
+            select {
+            case <-done:
+                if readErr != nil {
+                    if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+                        logger.InfoLogger.Printf("End of file reached for track: %s", track.Title)
+                        playing = false
+                        continue
+                    }
+                    logger.ErrorLogger.Printf("Error reading audio data: %v", readErr)
+                    playing = false
+                    continue
+                }
+            case <-stopChan:
+                playing = false
+                continue
+            case <-time.After(5 * time.Second):
+                logger.WarnLogger.Printf("Read timeout for track: %s", track.Title)
+                playing = false
+                continue
+            }
+            
+            opusData, err := encoder.Encode(audioBuf, frameSize, len(opusBuffer))
+            if err != nil {
+                logger.ErrorLogger.Printf("Error encoding to opus: %v", err)
+                playing = false
+                continue
+            }
+            
+            select {
+            case vc.OpusSend <- opusData:
+            case <-time.After(1 * time.Second):
+                logger.WarnLogger.Printf("Timeout sending opus data")
+                playing = false
+            case <-stopChan:
+                playing = false
+            }
+        }
+    }
+    
+    p.Lock()
+    p.playbackCount++
+    p.stream = nil
+    skipFlag := p.skipFlag
+    currentState := p.state
+    p.state = StateStopped
+    p.Unlock()
+    
+    if currentState != StateStopped {
+        for _, handler := range eventHandlers {
+            handler("track_end", track)
+        }
+        
+        if skipFlag {
+            logger.InfoLogger.Printf("Skip detected, playing next track")
+            go p.playNextTrack()
+        } else {
+            logger.InfoLogger.Printf("Track ended naturally or due to error, playing next track")
+            go p.playNextTrack()
+        }
+    }
 }

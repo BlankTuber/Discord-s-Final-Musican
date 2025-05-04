@@ -135,165 +135,145 @@ func (c *PlaylistCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
-	
-	options := i.ApplicationCommandData().Options
-	url := options[0].StringValue()
-	
-	maxItems := DefaultPlaylistMax
-	if len(options) > 1 {
-		maxItems = int(options[1].IntValue())
-	}
-	
-	channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ You need to be in a voice channel to use this command."),
-		})
-		return
-	}
-	
-	// Check if we need to join a voice channel
-	client.mu.Lock()
-	currentVc, vcExists := client.voiceConnections[i.GuildID]
-	joinNeeded := !vcExists || currentVc == nil || currentVc.ChannelID != channelID
-	client.mu.Unlock()
-	
-	// If we need to join a voice channel, do so
-	if joinNeeded {
-		err = client.JoinVoiceChannel(i.GuildID, channelID)
-		if err != nil {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
-			})
-			return
-		}
-	}
-	
-	// Stop radio if it's playing, but don't stop music
-	client.mu.Lock()
-	isInIdleMode := client.isInIdleMode
-	radioStreamer := client.radioStreamer
-	client.isInIdleMode = false
-	client.mu.Unlock()
-	
-	if isInIdleMode && radioStreamer != nil {
-		logger.InfoLogger.Println("Stopping radio before playlist playback")
-		radioStreamer.Stop()
-		time.Sleep(300 * time.Millisecond)
-	}
-	
-	client.DisableIdleMode()
-	
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr("⏳ Processing playlist... This may take a while."),
-	})
-	
-	// Use proper download_playlist function for playlists
-	tracks, err := client.udsClient.DownloadPlaylist(url, maxItems, DefaultMaxDuration, DefaultMaxSize, false)
-	if err != nil {
-		// Handle specific errors for unavailable videos
-		if strings.Contains(strings.ToLower(err.Error()), "unavailable video") {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr("⚠️ The playlist contains unavailable videos. Processing available videos..."),
-			})
-		} else {
-			// Fallback: try as single track if playlist fails
-			track, singleErr := client.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
-			if singleErr == nil && track != nil && track.FilePath != "" {
-				track.Requester = i.Member.User.Username
-				track.RequestedAt = time.Now().Unix()
-				
-				// Queue the track without stopping current playback
-				client.QueueTrackWithoutStarting(i.GuildID, track)
-				
-				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-					Content: stringPtr(fmt.Sprintf("✅ Added single track to queue: **%s**", track.Title)),
-				})
-				return
-			}
-			
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr(fmt.Sprintf("❌ Failed to download playlist: %s", err.Error())),
-			})
-			return
-		}
-	}
-	
-	if len(tracks) == 0 {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ No playable tracks found in the playlist."),
-		})
-		return
-	}
-	
-	// Add tracks to queue without stopping current playback
-	validTracks := 0
-	for _, track := range tracks {
-		// Skip tracks without file paths
-		if track.FilePath == "" {
-			logger.WarnLogger.Printf("Skipping track without file path: %s", track.Title)
-			continue
-		}
-		
-		// Ensure file exists
-		if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
-			logger.WarnLogger.Printf("Skipping track with missing file: %s (%s)", track.Title, track.FilePath)
-			continue
-		}
-		
-		track.Requester = i.Member.User.Username
-		track.RequestedAt = time.Now().Unix()
-		
-		// Queue tracks without starting playback
-		client.QueueTrackWithoutStarting(i.GuildID, track)
-		logger.InfoLogger.Printf("Track from playlist queued: %s", track.Title)
+    s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+        Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+    })
+    
+    options := i.ApplicationCommandData().Options
+    url := options[0].StringValue()
+    
+    maxItems := DefaultPlaylistMax
+    if len(options) > 1 {
+        maxItems = int(options[1].IntValue())
+    }
+    
+    channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
+    if err != nil {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ You need to be in a voice channel to use this command."),
+        })
+        return
+    }
+    
+    client.mu.Lock()
+    currentVc, vcExists := client.voiceConnections[i.GuildID]
+    joinNeeded := !vcExists || currentVc == nil || currentVc.ChannelID != channelID
+    client.mu.Unlock()
+    
+    if joinNeeded {
+        err = client.JoinVoiceChannel(i.GuildID, channelID)
+        if err != nil {
+            s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+                Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
+            })
+            return
+        }
+    }
+    
+    client.mu.Lock()
+    isInIdleMode := client.isInIdleMode
+    radioStreamer := client.radioStreamer
+    client.isInIdleMode = false
+    client.mu.Unlock()
+    
+    if isInIdleMode && radioStreamer != nil {
+        logger.InfoLogger.Println("Stopping radio before playlist playback")
+        radioStreamer.Stop()
+        time.Sleep(300 * time.Millisecond)
+    }
+    
+    client.DisableIdleMode()
+    
+    s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+        Content: stringPtr("⏳ Processing playlist... This may take a while."),
+    })
+    
+    tracks, err := client.udsClient.DownloadPlaylist(url, maxItems, DefaultMaxDuration, DefaultMaxSize, false)
+    if err != nil {
+        if strings.Contains(strings.ToLower(err.Error()), "unavailable video") {
+            s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+                Content: stringPtr("⚠️ The playlist contains unavailable videos. Processing available videos..."),
+            })
+        } else {
+            track, singleErr := client.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
+            if singleErr == nil && track != nil && track.FilePath != "" {
+                track.Requester = i.Member.User.Username
+                track.RequestedAt = time.Now().Unix()
+                
+                client.QueueTrackWithoutStarting(i.GuildID, track)
+                
+                s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+                    Content: stringPtr(fmt.Sprintf("✅ Added single track to queue: **%s**", track.Title)),
+                })
+                return
+            }
+            
+            s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+                Content: stringPtr(fmt.Sprintf("❌ Failed to download playlist: %s", err.Error())),
+            })
+            return
+        }
+    }
+    
+    if len(tracks) == 0 {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ No playable tracks found in the playlist."),
+        })
+        return
+    }
+    
+    for _, track := range tracks {
+        track.Requester = i.Member.User.Username
+        track.RequestedAt = time.Now().Unix()
+    }
+    
+    client.mu.RLock()
+    isPlaying := false
+    if player, exists := client.players[i.GuildID]; exists && player != nil {
+        if player.GetState() == audio.StatePlaying {
+            isPlaying = true
+        }
+    }
+    client.mu.RUnlock()
+    
+    addedCount := 0
+    if isPlaying {
+        for _, track := range tracks {
+            if track.FilePath == "" || !fileExists(track.FilePath) {
+                continue
+            }
+            
+            client.QueueTrackWithoutStarting(i.GuildID, track)
+            addedCount++
+        }
+    } else {
+        validTracks := make([]*audio.Track, 0, len(tracks))
+        for _, track := range tracks {
+            if track.FilePath != "" && fileExists(track.FilePath) {
+                validTracks = append(validTracks, track)
+                addedCount++
+            }
+        }
+        
+        if len(validTracks) > 0 {
+            client.BatchAddTracksToQueue(i.GuildID, validTracks)
+        }
+    }
+    
+    if addedCount == 0 {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ No valid tracks found in the playlist. Files may be missing or corrupted."),
+        })
+    } else {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr(fmt.Sprintf("✅ Added %d tracks from playlist to the queue!", addedCount)),
+        })
+    }
+}
 
-		// Update progress occasionally
-		if validTracks == 0 || validTracks%5 == 0 {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr(fmt.Sprintf("✅ Added %d tracks to queue so far...", validTracks+1)),
-			})
-		}
-		
-		validTracks++
-	}
-	
-	// Get current track and queue to check if we need to start playback
-	client.mu.Lock()
-	currentTrack := client.GetCurrentTrack(i.GuildID)
-	client.mu.Unlock()
-	
-	// If nothing is currently playing, start the first track
-	if currentTrack == nil {
-		client.mu.Lock()
-		if player, exists := client.players[i.GuildID]; exists && player != nil {
-			client.mu.Unlock()
-			// Player exists but no current track, try to start
-			player.Skip()
-		} else if len(client.songQueues[i.GuildID]) > 0 {
-			client.mu.Unlock()
-			// Queue has songs but no player, start player
-			client.mu.Lock()
-			client.startPlayer(i.GuildID)
-			client.mu.Unlock()
-		} else {
-			client.mu.Unlock()
-		}
-	}
-	
-	// Final update with completion message
-	if validTracks == 0 {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ No valid tracks found in the playlist. Files may be missing or corrupted."),
-		})
-	} else {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("✅ Added %d tracks from playlist to the queue!", validTracks)),
-		})
-	}
+func fileExists(filePath string) bool {
+    _, err := os.Stat(filePath)
+    return !os.IsNotExist(err)
 }
 
 type SearchCommand struct{}
