@@ -133,6 +133,7 @@ func (c *PlaylistCommand) Options() []*discordgo.ApplicationCommandOption {
 		},
 	}
 }
+
 func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -165,6 +166,7 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	if isInIdleMode && radioStreamer != nil {
 		logger.InfoLogger.Println("Stopping radio before playlist playback")
 		radioStreamer.Stop()
+		time.Sleep(300 * time.Millisecond)
 	}
 	
 	// Continue with idle mode disabling
@@ -184,20 +186,41 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	
 	tracks, err := client.udsClient.DownloadPlaylist(url, maxItems, DefaultMaxDuration, DefaultMaxSize, false)
 	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("❌ Failed to download playlist: %s", err.Error())),
-		})
-		return
+		// Handle specific errors for unavailable videos
+		if strings.Contains(strings.ToLower(err.Error()), "unavailable video") {
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr("⚠️ The playlist contains unavailable videos. Processing available videos..."),
+			})
+		} else {
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr(fmt.Sprintf("❌ Failed to download playlist: %s", err.Error())),
+			})
+			return
+		}
 	}
 	
 	if len(tracks) == 0 {
+		// Try to download the first track directly
+		firstTrack, err := client.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
+		if err != nil || firstTrack == nil || firstTrack.FilePath == "" {
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr("❌ No playable tracks found in the playlist."),
+			})
+			return
+		}
+		
+		// Add and play the first track
+		firstTrack.Requester = i.Member.User.Username
+		firstTrack.RequestedAt = time.Now().Unix()
+		client.AddTrackToQueue(i.GuildID, firstTrack)
+		
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ No playable tracks found in the playlist."),
+			Content: stringPtr(fmt.Sprintf("✅ Added 1 song from playlist: **%s**", firstTrack.Title)),
 		})
 		return
 	}
 	
-	// Add tracks one by one with proper queue management
+	// Add tracks to queue
 	validTracks := 0
 	for _, track := range tracks {
 		// Skip tracks without file paths
@@ -238,7 +261,6 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		Content: stringPtr(fmt.Sprintf("✅ Added %d songs from playlist to the queue!", validTracks)),
 	})
 }
-
 
 type SearchCommand struct{}
 
