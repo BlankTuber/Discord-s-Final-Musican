@@ -935,57 +935,52 @@ func (c *RestartCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *RestartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate, client *Client) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
+    s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+        Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+    })
 
-	// Get the current queue
-	queue, currentTrack := client.GetQueueState(i.GuildID)
+    // Get the current queue
+    queue, currentTrack := client.GetQueueState(i.GuildID)
 
-	if len(queue) == 0 && currentTrack == nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Queue is empty. Nothing to restart."),
-		})
-		return
-	}
+    if len(queue) == 0 && currentTrack == nil {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ Queue is empty. Nothing to restart."),
+        })
+        return
+    }
 
-	// Combine currentTrack and queue
-	allTracks := make([]*audio.Track, 0)
-	if currentTrack != nil {
-		allTracks = append(allTracks, currentTrack)
-	}
-	allTracks = append(allTracks, queue...)
+    // Combine currentTrack and queue
+    allTracks := make([]*audio.Track, 0)
+    if currentTrack != nil {
+        allTracks = append(allTracks, currentTrack)
+    }
+    allTracks = append(allTracks, queue...)
 
-	// Make sure the bot is in a voice channel
-	channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ You need to be in a voice channel to use this command."),
-		})
-		return
-	}
+    // Make sure the bot is in a voice channel
+    channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
+    if err != nil {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ You need to be in a voice channel to use this command."),
+        })
+        return
+    }
 
-	// Join the voice channel if not already there
-	err = client.JoinVoiceChannel(i.GuildID, channelID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
-		})
-		return
-	}
+    // Join the voice channel if not already there
+    err = client.JoinVoiceChannel(i.GuildID, channelID)
+    if err != nil {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
+        })
+        return
+    }
 
-	// Stop any currently playing audio
-	client.StopAllPlayback()
+    // Clear the queue
+    client.ClearQueue(i.GuildID)
+    
+    // Add all tracks back to the queue in one batch operation
+    client.BatchAddTracksToQueue(i.GuildID, allTracks)
 
-	// Clear the queue
-	client.ClearQueue(i.GuildID)
-
-	// Add all tracks back to the queue
-	for _, track := range allTracks {
-		client.AddTrackToQueue(i.GuildID, track)
-	}
-
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr("🔁 Queue restarted from the beginning!"),
-	})
+    s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+        Content: stringPtr("🔁 Queue restarted from the beginning!"),
+    })
 }

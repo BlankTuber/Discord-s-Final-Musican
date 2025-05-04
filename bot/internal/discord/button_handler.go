@@ -50,71 +50,54 @@ func FormatSearchButtonID(trackIndex int, guildID, userID string) string {
 func (c *Client) HandleSearchButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
     logger.InfoLogger.Printf("Button: Handling button interaction: %s", i.MessageComponentData().CustomID)
     
+    // Respond immediately to prevent timeout
+    s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+        Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+    })
+    
     button, err := ParseSearchButton(i.MessageComponentData().CustomID)
     if err != nil {
         logger.ErrorLogger.Printf("Button: Error parsing search button ID: %v", err)
-        s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-            Type: discordgo.InteractionResponseChannelMessageWithSource,
-            Data: &discordgo.InteractionResponseData{
-                Content: "❌ Error processing button. Please try searching again.",
-                Flags:   discordgo.MessageFlagsEphemeral,
-            },
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ Error processing button. Please try searching again."),
         })
         return
     }
     
     if i.Member.User.ID != button.UserID {
         logger.WarnLogger.Printf("Button: User %s tried to use another user's (%s) button", i.Member.User.ID, button.UserID)
-        s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-            Type: discordgo.InteractionResponseChannelMessageWithSource,
-            Data: &discordgo.InteractionResponseData{
-                Content: "❌ You can't use buttons from someone else's search results.",
-                Flags:   discordgo.MessageFlagsEphemeral,
-            },
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ You can't use buttons from someone else's search results."),
         })
         return
     }
     
-    s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-        Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-    })
-    
-    // First check if the cached results exist
-    cacheExists := false
-    var searchResults []*audio.Track
-    var keys []string
-    
+    // Copy search results from cache safely
     c.mu.RLock()
-    logger.InfoLogger.Printf("Button: Looking for search results with session ID: %s", button.SessionID)
-    searchResultsTemp, ok := c.searchResultsCache[button.SessionID]
+    var searchResults []*audio.Track
+    cacheExists := false
+    sessionID := button.SessionID
+    
+    logger.InfoLogger.Printf("Button: Looking for search results with session ID: %s", sessionID)
+    searchResultsTemp, ok := c.searchResultsCache[sessionID]
     if ok {
         searchResults = make([]*audio.Track, len(searchResultsTemp))
         copy(searchResults, searchResultsTemp)
         cacheExists = true
-        logger.InfoLogger.Printf("Button: Found %d results in cache for session %s", len(searchResults), button.SessionID)
-    } else {
-        // Log cache keys for debugging
-        keys = make([]string, 0, len(c.searchResultsCache))
-        for key := range c.searchResultsCache {
-            keys = append(keys, key)
-        }
-        logger.WarnLogger.Printf("Button: No results found in cache for session %s", button.SessionID)
-        logger.DebugLogger.Printf("Button: Current cache keys (%d): %v", len(keys), keys)
+        logger.InfoLogger.Printf("Button: Found %d results in cache for session %s", len(searchResults), sessionID)
     }
     c.mu.RUnlock()
     
+    // If not found with exact session ID, try to find by guild and user
     if !cacheExists {
-        // Try to salvage the situation by searching all cache entries
-        logger.InfoLogger.Printf("Button: Searching all cache entries for matching results")
         c.mu.RLock()
         for key, results := range c.searchResultsCache {
-            logger.DebugLogger.Printf("Button: Checking cache key: %s", key)
             if strings.Contains(key, button.GuildID) && strings.Contains(key, button.UserID) {
                 logger.InfoLogger.Printf("Button: Found potential match in key: %s", key)
                 searchResults = make([]*audio.Track, len(results))
                 copy(searchResults, results)
                 cacheExists = true
-                button.SessionID = key
+                sessionID = key
                 break
             }
         }
@@ -142,18 +125,17 @@ func (c *Client) HandleSearchButton(s *discordgo.Session, i *discordgo.Interacti
         return
     }
     
-    // Stop radio explicitly when a track is selected
+    // Stop radio if it's playing
     c.mu.Lock()
     isInIdleMode := c.isInIdleMode
     radioStreamer := c.radioStreamer
     c.isInIdleMode = false
     c.mu.Unlock()
     
-    // Stop radio before processing the playlist
     if isInIdleMode && radioStreamer != nil {
         logger.InfoLogger.Println("Stopping radio before track playback")
         radioStreamer.Stop()
-        time.Sleep(300 * time.Millisecond)  // Small delay to ensure clean switch
+        time.Sleep(300 * time.Millisecond)
     }
     
     c.DisableIdleMode()
@@ -170,6 +152,11 @@ func (c *Client) HandleSearchButton(s *discordgo.Session, i *discordgo.Interacti
     s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
         Content: stringPtr(fmt.Sprintf("🔍 Selected: **%s**\n⏳ Downloading...", selectedTrack.Title)),
     })
+    
+    // Once we've processed the button, remove the entry from cache to prevent issues
+    c.mu.Lock()
+    delete(c.searchResultsCache, sessionID)
+    c.mu.Unlock()
     
     logger.InfoLogger.Printf("Button: Downloading track: %s", selectedTrack.URL)
     track, err := c.udsClient.DownloadAudio(selectedTrack.URL, DefaultMaxDuration, DefaultMaxSize, false)
@@ -191,6 +178,7 @@ func (c *Client) HandleSearchButton(s *discordgo.Session, i *discordgo.Interacti
         Content: stringPtr(fmt.Sprintf("✅ Added to queue: **%s**", track.Title)),
     })
     
+    // Disable buttons after processing
     logger.InfoLogger.Printf("Button: Disabling buttons on message: %s", i.Message.ID)
     emptyComponents := []discordgo.MessageComponent{}
     editMsg := &discordgo.MessageEdit{
@@ -204,6 +192,7 @@ func (c *Client) HandleSearchButton(s *discordgo.Session, i *discordgo.Interacti
     }
 }
 
+
 func (c *Client) initSearchComponents() {
     if c.searchResultsCache == nil {
         c.searchResultsCache = make(map[string][]*audio.Track)
@@ -213,7 +202,7 @@ func (c *Client) initSearchComponents() {
 }
 
 func (c *Client) CleanupSearchCache() {
-    cleanupInterval := 2 * time.Hour  // Extended to 2 hours
+    cleanupInterval := 30 * time.Minute  // Reduced from 2 hours to 30 minutes
     ticker := time.NewTicker(cleanupInterval)
     
     logger.InfoLogger.Printf("Button: Starting search cache cleanup with interval: %v", cleanupInterval)
@@ -227,7 +216,8 @@ func (c *Client) CleanupSearchCache() {
                 return
             case <-ticker.C:
                 c.mu.Lock()
-                cacheSize := len(c.searchResultsCache)
+                oldCache := c.searchResultsCache
+                cacheSize := len(oldCache)
                 c.searchResultsCache = make(map[string][]*audio.Track)
                 c.mu.Unlock()
                 logger.InfoLogger.Printf("Button: Cleaned up search results cache (%d entries removed)", cacheSize)

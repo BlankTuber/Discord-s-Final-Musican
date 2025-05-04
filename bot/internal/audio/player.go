@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"layeh.com/gopus"
@@ -94,18 +95,26 @@ func (p *Player) GetCurrentTrack() *Track {
 	return p.currentTrack
 }
 
+// In audio/player.go - Replace the Skip function with this:
 func (p *Player) Skip() {
-	p.Lock()
-	if p.state != StateStopped {
-		p.skipFlag = true // Set the skip flag
-		select {
-		case p.stopChan <- true:
-		default:
-		}
-		p.state = StateStopped
-	}
-	p.Unlock()
-	// Don't call playNextTrack here, let the playTrack function handle it
+    p.Lock()
+    wasPlaying := p.state == StatePlaying
+    if p.state != StateStopped {
+        p.skipFlag = true // Set the skip flag
+        select {
+        case p.stopChan <- true:
+        default:
+        }
+        p.state = StateStopped
+    }
+    p.Unlock()
+    
+    // If we were playing something, immediately trigger the next track
+    if wasPlaying {
+        // Small delay to ensure clean stop
+        time.Sleep(100 * time.Millisecond)
+        go p.playNextTrack()
+    }
 }
 
 func (p *Player) Stop() {

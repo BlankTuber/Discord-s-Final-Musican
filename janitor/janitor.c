@@ -198,72 +198,83 @@ int clean_orphaned_files(const char *music_dir, sqlite3 *db) {
     int removed = 0;
     sqlite3_stmt *stmt_check_path;
     sqlite3_stmt *stmt_check_filename;
+    sqlite3_stmt *stmt_check_like_filename;
     char sql_check_path[MAX_SQL_LENGTH];
-    char sql_check_filename[MAX_SQL_LENGTH];
+    char sql_check_filename[MAX_SQL_LENGTH]; 
+    char sql_check_like_filename[MAX_SQL_LENGTH];
 
     printf("Opening music directory: %s\n", music_dir);
     dir = opendir(music_dir);
     if (dir == NULL) {
-        // Use errno and strerror for detailed error
         fprintf(stderr, "Failed to open music directory '%s': %s\n", music_dir, strerror(errno));
-        return -1; // Indicate error
+        return -1;
     }
 
-    // Prepare statements for checking both full path and filename
-    // ONLY check non-stream entries in the database
+    // Three different SQL queries for matching files in different ways
     snprintf(sql_check_path, MAX_SQL_LENGTH, "SELECT 1 FROM songs WHERE file_path = ? AND is_stream = 0 LIMIT 1");
     snprintf(sql_check_filename, MAX_SQL_LENGTH, "SELECT 1 FROM songs WHERE file_path = ? AND is_stream = 0 LIMIT 1");
+    snprintf(sql_check_like_filename, MAX_SQL_LENGTH, "SELECT 1 FROM songs WHERE file_path LIKE ? AND is_stream = 0 LIMIT 1");
 
     if (sqlite3_prepare_v2(db, sql_check_path, -1, &stmt_check_path, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQL error (prepare check_path): %s\n", sqlite3_errmsg(db));
         closedir(dir);
         return -1;
     }
-     if (sqlite3_prepare_v2(db, sql_check_filename, -1, &stmt_check_filename, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, sql_check_filename, -1, &stmt_check_filename, NULL) != SQLITE_OK) {
         fprintf(stderr, "SQL error (prepare check_filename): %s\n", sqlite3_errmsg(db));
-        sqlite3_finalize(stmt_check_path); // Clean up already prepared statement
+        sqlite3_finalize(stmt_check_path);
+        closedir(dir);
+        return -1;
+    }
+    if (sqlite3_prepare_v2(db, sql_check_like_filename, -1, &stmt_check_like_filename, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error (prepare check_like_filename): %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt_check_path);
+        sqlite3_finalize(stmt_check_filename);
         closedir(dir);
         return -1;
     }
 
     while ((entry = readdir(dir)) != NULL) {
-        // Skip directories, hidden files (starting with .), and special entries "." and ".."
         if (entry->d_type == DT_REG && entry->d_name[0] != '.') {
             const char *ext = strrchr(entry->d_name, '.');
-            // Only consider .mp3 files for now as per original logic
-            // Add check for ext != NULL to avoid issues with files without extensions
             if (ext != NULL && strcmp(ext, ".mp3") == 0) {
                 char full_path[MAX_PATH_LENGTH];
-                // Construct the full path by joining music_dir and filename
                 snprintf(full_path, MAX_PATH_LENGTH, "%s/%s", music_dir, entry->d_name);
 
                 int found = 0;
 
-                // Check if the full_path exists in the database (for non-stream entries)
+                // Method 1: Check exact full path match
                 sqlite3_bind_text(stmt_check_path, 1, full_path, -1, SQLITE_STATIC);
                 if (sqlite3_step(stmt_check_path) == SQLITE_ROW) {
                     found = 1;
                 }
-                sqlite3_reset(stmt_check_path); // Reset for the next iteration
+                sqlite3_reset(stmt_check_path);
 
-                // If not found by full path, check just the filename (for non-stream entries)
-                // This accounts for flexibility in how file_path might be stored
+                // Method 2: Check exact filename match
                 if (!found) {
-                     sqlite3_bind_text(stmt_check_filename, 1, entry->d_name, -1, SQLITE_STATIC);
-                     if (sqlite3_step(stmt_check_filename) == SQLITE_ROW) {
-                         found = 1;
-                     }
-                     sqlite3_reset(stmt_check_filename); // Reset for the next iteration
+                    sqlite3_bind_text(stmt_check_filename, 1, entry->d_name, -1, SQLITE_STATIC);
+                    if (sqlite3_step(stmt_check_filename) == SQLITE_ROW) {
+                        found = 1;
+                    }
+                    sqlite3_reset(stmt_check_filename);
                 }
 
+                // Method 3: Check using LIKE to find filename at end of paths
+                if (!found) {
+                    char like_pattern[MAX_PATH_LENGTH + 3];
+                    snprintf(like_pattern, sizeof(like_pattern), "%%%s", entry->d_name);
+                    sqlite3_bind_text(stmt_check_like_filename, 1, like_pattern, -1, SQLITE_STATIC);
+                    if (sqlite3_step(stmt_check_like_filename) == SQLITE_ROW) {
+                        found = 1;
+                    }
+                    sqlite3_reset(stmt_check_like_filename);
+                }
 
                 if (!found) {
-                    // File not found in database (and is not a stream), remove it
                     printf("Removing orphaned file: %s\n", full_path);
                     if (remove(full_path) == 0) {
                         removed++;
                     } else {
-                        // Use strerror to get a system error message
                         fprintf(stderr, "Failed to remove file %s: %s\n", full_path, strerror(errno));
                     }
                 }
@@ -273,6 +284,7 @@ int clean_orphaned_files(const char *music_dir, sqlite3 *db) {
 
     sqlite3_finalize(stmt_check_path);
     sqlite3_finalize(stmt_check_filename);
+    sqlite3_finalize(stmt_check_like_filename);
     closedir(dir);
 
     return removed;

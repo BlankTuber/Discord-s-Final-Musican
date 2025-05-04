@@ -336,3 +336,34 @@ func (c *Client) BatchAddToQueue(guildID string, tracks []*audio.Track) int {
 	
 	return validTracks
 }
+
+func (c *Client) BatchAddTracksToQueue(guildID string, tracks []*audio.Track) {
+    // Stop current playback once, before adding anything
+    c.StopAllPlayback()
+    
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    // Make sure queue exists for this guild
+    if _, ok := c.songQueues[guildID]; !ok {
+        c.songQueues[guildID] = make([]*audio.Track, 0)
+    }
+
+    // Add all tracks to queue at once
+    c.songQueues[guildID] = append(c.songQueues[guildID], tracks...)
+
+    // Start playing only after all tracks are added
+    if len(c.songQueues[guildID]) > 0 {
+        c.startPlayer(guildID)
+    }
+
+    // Save the queue to database
+    if c.dbManager != nil {
+        go func() {
+            err := c.dbManager.SaveQueue(guildID, c.songQueues[guildID])
+            if err != nil {
+                logger.ErrorLogger.Printf("Failed to save queue to database: %v", err)
+            }
+        }()
+    }
+}
