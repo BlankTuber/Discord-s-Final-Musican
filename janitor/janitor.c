@@ -111,6 +111,23 @@ int delete_song_from_db(sqlite3 *db, int song_id) {
     
     sqlite3_finalize(stmt);
     
+    snprintf(sql, MAX_SQL_LENGTH, "DELETE FROM queue_items WHERE song_id = ?");
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+        return 1;
+    }
+    
+    sqlite3_bind_int(stmt, 1, song_id);
+    
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        fprintf(stderr, "Execution failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return 1;
+    }
+    
+    sqlite3_finalize(stmt);
+    
     snprintf(sql, MAX_SQL_LENGTH, "DELETE FROM songs WHERE id = ?");
     
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -160,7 +177,17 @@ int clean_orphaned_files(const char *music_dir, sqlite3 *db) {
                 
                 sqlite3_bind_text(stmt, 1, full_path, -1, SQLITE_STATIC);
                 
-                if (sqlite3_step(stmt) != SQLITE_ROW) {
+                int found = (sqlite3_step(stmt) == SQLITE_ROW);
+                sqlite3_reset(stmt);
+                
+                // Also try with just the filename
+                if (!found) {
+                    sqlite3_bind_text(stmt, 1, entry->d_name, -1, SQLITE_STATIC);
+                    found = (sqlite3_step(stmt) == SQLITE_ROW);
+                    sqlite3_reset(stmt);
+                }
+                
+                if (!found) {
                     // File not in database, remove it
                     printf("Removing orphaned file: %s\n", full_path);
                     if (remove(full_path) == 0) {
@@ -169,8 +196,6 @@ int clean_orphaned_files(const char *music_dir, sqlite3 *db) {
                         perror("Failed to remove file");
                     }
                 }
-                
-                sqlite3_reset(stmt);
             }
         }
     }
@@ -178,6 +203,69 @@ int clean_orphaned_files(const char *music_dir, sqlite3 *db) {
     sqlite3_finalize(stmt);
     closedir(dir);
     
+    return removed;
+}
+
+int clean_orphaned_entries(const char *music_dir, sqlite3 *db) {
+    sqlite3_stmt *stmt;
+    char sql[MAX_SQL_LENGTH];
+    int removed = 0;
+    
+    // Get all song entries
+    snprintf(sql, MAX_SQL_LENGTH, "SELECT id, file_path, title FROM songs");
+    
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+    
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        int song_id = sqlite3_column_int(stmt, 0);
+        const char *file_path = (const char *)sqlite3_column_text(stmt, 1);
+        const char *title = (const char *)sqlite3_column_text(stmt, 2);
+        
+        if (!file_path || file_path[0] == '\0') {
+            printf("Entry has no file path: %s (ID: %d)\n", title, song_id);
+            if (delete_song_from_db(db, song_id) == 0) {
+                removed++;
+            }
+            continue;
+        }
+        
+        // Check if file exists on its own
+        if (access(file_path, F_OK) == -1) {
+            // Try with music directory prefix
+            char full_path[MAX_PATH_LENGTH];
+            const char *filename = strrchr(file_path, '/');
+            if (filename) {
+                filename++; // Skip the slash
+                snprintf(full_path, MAX_PATH_LENGTH, "%s/%s", music_dir, filename);
+                
+                if (access(full_path, F_OK) == -1) {
+                    // File doesn't exist, remove the entry
+                    printf("Removing orphaned entry: %s (ID: %d, path: %s)\n", 
+                           title, song_id, file_path);
+                    if (delete_song_from_db(db, song_id) == 0) {
+                        removed++;
+                    }
+                }
+            } else {
+                // No slash in path, try with music directory
+                snprintf(full_path, MAX_PATH_LENGTH, "%s/%s", music_dir, file_path);
+                
+                if (access(full_path, F_OK) == -1) {
+                    // File doesn't exist, remove the entry
+                    printf("Removing orphaned entry: %s (ID: %d, path: %s)\n", 
+                           title, song_id, file_path);
+                    if (delete_song_from_db(db, song_id) == 0) {
+                        removed++;
+                    }
+                }
+            }
+        }
+    }
+    
+    sqlite3_finalize(stmt);
     return removed;
 }
 
@@ -206,12 +294,23 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
     
-    // First remove orphaned files (files in directory but not in database)
+    // First clean orphaned database entries
+    printf("Checking for orphaned database entries...\n");
+    int orphaned_entries = clean_orphaned_entries(music_dir, db);
+    if (orphaned_entries > 0) {
+        printf("Removed %d orphaned database entries\n", orphaned_entries);
+    } else if (orphaned_entries == 0) {
+        printf("No orphaned database entries found\n");
+    } else {
+        printf("Error checking for orphaned database entries\n");
+    }
+    
+    // Then remove orphaned files (files in directory but not in database)
     printf("Checking for orphaned files...\n");
-    int orphaned = clean_orphaned_files(music_dir, db);
-    if (orphaned > 0) {
-        printf("Removed %d orphaned files\n", orphaned);
-    } else if (orphaned == 0) {
+    int orphaned_files = clean_orphaned_files(music_dir, db);
+    if (orphaned_files > 0) {
+        printf("Removed %d orphaned files\n", orphaned_files);
+    } else if (orphaned_files == 0) {
         printf("No orphaned files found\n");
     } else {
         printf("Error checking for orphaned files\n");
@@ -260,6 +359,7 @@ int main(int argc, char *argv[]) {
     
     sqlite3_close(db);
     
-    printf("Janitor completed. Deleted %d songs.\n", deleted);
+    printf("Janitor completed. Deleted %d songs, removed %d orphaned entries, removed %d orphaned files.\n", 
+           deleted, orphaned_entries, orphaned_files);
     return EXIT_SUCCESS;
 }

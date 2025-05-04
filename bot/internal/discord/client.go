@@ -154,38 +154,59 @@ func NewClient(config ClientConfig) (*Client, error) {
 }
 
 func (c *Client) Connect() error {
-	err := c.session.Open()
-	if err != nil {
-		return err
-	}
-	
-	err = c.udsClient.Ping()
-	if err != nil {
-		logger.WarnLogger.Printf("Failed to ping downloader service: %v", err)
-		logger.WarnLogger.Println("Make sure the downloader service is running!")
-	} else {
-		logger.InfoLogger.Println("Successfully connected to downloader service")
-	}
-	
-	c.startIdleChecker()
-	c.CleanupSearchCache()
-	
-	go c.startIdleMode()
-	
-	return c.RefreshSlashCommands()
+    err := c.session.Open()
+    if err != nil {
+        return err
+    }
+    
+    err = c.udsClient.Ping()
+    if err != nil {
+        logger.WarnLogger.Printf("Failed to ping downloader service: %v", err)
+        logger.WarnLogger.Println("Make sure the downloader service is running!")
+    } else {
+        logger.InfoLogger.Println("Successfully connected to downloader service")
+    }
+    
+    c.startIdleChecker()
+    c.CleanupSearchCache()
+    
+    // Delay idle mode start to ensure everything is initialized properly
+    go func() {
+        logger.InfoLogger.Println("Scheduling idle mode startup in 3 seconds...")
+        time.Sleep(3 * time.Second)
+        c.startIdleMode()
+    }()
+    
+    return c.RefreshSlashCommands()
 }
+
 
 func (c *Client) StopAllPlayback() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	
+	logger.InfoLogger.Println("Stopping all audio playback")
+	
+	// Stop radio if it's playing
+	if c.radioStreamer != nil {
+		c.radioStreamer.Stop()
+		logger.InfoLogger.Println("Radio streamer stopped")
+	}
+	
+	// Stop all players
 	for _, player := range c.players {
 		if player != nil {
 			player.Stop()
 		}
 	}
 	
-	time.Sleep(100 * time.Millisecond)
+	// Reset players map to ensure clean state
+	c.players = make(map[string]*audio.Player)
+	
+	// Wait a bit to ensure everything has stopped
+	c.mu.Unlock()
+	time.Sleep(200 * time.Millisecond)
+	c.mu.Lock()
 }
 
 func (c *Client) Disconnect() error {
@@ -266,6 +287,11 @@ func (c *Client) JoinVoiceChannel(guildID, channelID string) error {
 			return nil
 		}
 		
+		// Stop any audio playing in the current voice channel
+		if player, exists := c.players[guildID]; exists && player != nil {
+			player.Stop()
+		}
+		
 		vc.Disconnect()
 	}
 	
@@ -279,6 +305,7 @@ func (c *Client) JoinVoiceChannel(guildID, channelID string) error {
 	
 	return nil
 }
+
 
 func (c *Client) LeaveVoiceChannel(guildID string) error {
 	c.mu.Lock()
@@ -359,62 +386,74 @@ func (c *Client) checkChannelEmpty(guildID, channelID string) bool {
 }
 
 func (c *Client) startIdleMode() {
-	c.mu.Lock()
-	
-	if c.isInIdleMode {
-		c.mu.Unlock()
-		return
-	}
-	
-	if c.defaultGuildID == "" || c.defaultVCID == "" {
-		logger.WarnLogger.Println("Cannot enter idle mode: default voice channel not configured")
-		c.mu.Unlock()
-		return
-	}
-	
-	if c.idleModeDisabled {
-		logger.InfoLogger.Println("Idle mode is currently disabled")
-		c.mu.Unlock()
-		return
-	}
-	
-	c.isInIdleMode = true
-	defaultGuildID := c.defaultGuildID
-	defaultVCID := c.defaultVCID
-	
-	alreadyConnected := false
-	if vc, ok := c.voiceConnections[defaultGuildID]; ok && vc != nil && vc.ChannelID == defaultVCID {
-		alreadyConnected = true
-	}
-	
-	c.mu.Unlock()
-	
-	logger.InfoLogger.Println("Entering idle mode")
-	
-	c.StopAllPlayback()
-	
-	if !alreadyConnected {
-		err := c.JoinVoiceChannel(defaultGuildID, defaultVCID)
-		if err != nil {
-			logger.ErrorLogger.Printf("Failed to join default voice channel: %v", err)
-			
-			c.mu.Lock()
-			c.isInIdleMode = false
-			c.mu.Unlock()
-			return
-		}
-	} else {
-		logger.InfoLogger.Println("Already in the default voice channel, staying connected")
-	}
-	
-	go c.runJanitor()
-	
-	time.Sleep(250 * time.Millisecond)
-	
-	c.radioStreamer.Start()
-	
-	c.session.UpdateGameStatus(0, "Radio Mode | Use /help")
+    c.mu.Lock()
+    
+    if c.isInIdleMode {
+        logger.InfoLogger.Println("Idle mode is already active")
+        c.mu.Unlock()
+        return
+    }
+    
+    if c.defaultGuildID == "" || c.defaultVCID == "" {
+        logger.WarnLogger.Println("Cannot enter idle mode: default voice channel not configured")
+        c.mu.Unlock()
+        return
+    }
+    
+    if c.idleModeDisabled {
+        logger.InfoLogger.Println("Idle mode is currently disabled")
+        c.mu.Unlock()
+        return
+    }
+    
+    c.isInIdleMode = true
+    defaultGuildID := c.defaultGuildID
+    defaultVCID := c.defaultVCID
+    
+    alreadyConnected := false
+    if vc, ok := c.voiceConnections[defaultGuildID]; ok && vc != nil && vc.ChannelID == defaultVCID {
+        alreadyConnected = true
+    }
+    
+    c.mu.Unlock()
+    
+    logger.InfoLogger.Println("Entering idle mode")
+    
+    // Don't call StopAllPlayback() here, just ensure no player is active
+    c.mu.Lock()
+    for guildID, player := range c.players {
+        if player != nil {
+            logger.InfoLogger.Printf("Stopping player in guild %s before radio start", guildID)
+            player.Stop()
+        }
+    }
+    c.players = make(map[string]*audio.Player)
+    c.mu.Unlock()
+    
+    if !alreadyConnected {
+        err := c.JoinVoiceChannel(defaultGuildID, defaultVCID)
+        if err != nil {
+            logger.ErrorLogger.Printf("Failed to join default voice channel: %v", err)
+            
+            c.mu.Lock()
+            c.isInIdleMode = false
+            c.mu.Unlock()
+            return
+        }
+    } else {
+        logger.InfoLogger.Println("Already in the default voice channel, staying connected")
+    }
+    
+    go c.runJanitor()
+    
+    time.Sleep(250 * time.Millisecond)
+    
+    logger.InfoLogger.Println("Starting radio streamer...")
+    c.radioStreamer.Start()
+    
+    c.session.UpdateGameStatus(0, "Radio Mode | Use /help")
 }
+
 
 func (c *Client) startIdleChecker() {
 	c.idleCheckTicker = time.NewTicker(30 * time.Second)

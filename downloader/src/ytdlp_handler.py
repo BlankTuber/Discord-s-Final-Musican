@@ -4,6 +4,7 @@ import time
 import traceback
 from database import Database
 import logger
+import yt_dlp
 
 config = {}
 db = None
@@ -185,6 +186,176 @@ def download_playlist(url, max_items=None, max_duration_seconds=None, max_size_m
     except Exception as e:
         elapsed = time.time() - start_time
         logger.logger.error(f"Error in download_playlist after {elapsed:.2f} seconds: {e}")
+        logger.logger.debug(f"Traceback: {traceback.format_exc()}")
+        return {"status": "error", "message": str(e)}
+
+def get_playlist_info(url, max_items=None):
+    """Get information about a playlist without downloading it"""
+    logger.logger.info(f"Getting playlist info for URL: {url}, max_items: {max_items}")
+    start_time = time.time()
+    
+    platform = utils.get_platform(url)
+    
+    if platform not in config["allowed_origins"]:
+        logger.logger.warning(f"Platform '{platform}' is not in the allowed origins list.")
+        logger.logger.warning(f"Allowed origins: {config['allowed_origins']}")
+        return {"status": "error", "message": f"Platform '{platform}' is not allowed"}
+    
+    try:
+        with yt_dlp.YoutubeDL({
+            'skip_download': True, 
+            'quiet': True, 
+            'noplaylist': False,
+            'extract_flat': True,
+            'socket_timeout': 30,
+            'ignoreerrors': True
+        }) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            if not info:
+                return {"status": "error", "message": "Could not extract playlist info"}
+            
+            # Check if this is a playlist or a single video
+            if 'entries' not in info:
+                # This is a single video, not a playlist
+                return {
+                    "status": "success",
+                    "playlist_title": info.get('title', 'Single Video'),
+                    "playlist_url": url,
+                    "total_tracks": 1,
+                    "is_playlist": False
+                }
+            
+            entries = list(info.get('entries', []))
+            
+            # Filter out unavailable videos
+            filtered_entries = []
+            for entry in entries:
+                if entry and entry.get('id') is not None:
+                    filtered_entries.append(entry)
+                else:
+                    logger.logger.info(f"Skipping unavailable video in playlist")
+            
+            entries = filtered_entries
+            
+            if max_items:
+                entries = entries[:max_items]
+            
+            total_tracks = len(entries)
+            
+            playlist_title = info.get('title', 'Unknown Playlist')
+            
+            elapsed = time.time() - start_time
+            logger.logger.info(f"Playlist info retrieved in {elapsed:.2f} seconds")
+            logger.logger.info(f"Playlist title: {playlist_title}, total tracks: {total_tracks}")
+            
+            return {
+                "status": "success",
+                "playlist_title": playlist_title,
+                "playlist_url": url,
+                "total_tracks": total_tracks,
+                "is_playlist": True
+            }
+    except Exception as e:
+        elapsed = time.time() - start_time
+        logger.logger.error(f"Error getting playlist info after {elapsed:.2f} seconds: {e}")
+        logger.logger.debug(f"Traceback: {traceback.format_exc()}")
+        return {"status": "error", "message": str(e)}
+
+def download_playlist_item(url, index, max_duration_seconds=None, max_size_mb=None, allow_live=False):
+    """Download a specific item from a playlist by index"""
+    logger.logger.info(f"Downloading playlist item {index} from URL: {url}")
+    start_time = time.time()
+    
+    platform = utils.get_platform(url)
+    platform_prefix = utils.get_platform_prefix(platform)
+    
+    if platform not in config["allowed_origins"]:
+        logger.logger.warning(f"Platform '{platform}' is not in the allowed origins list.")
+        logger.logger.warning(f"Allowed origins: {config['allowed_origins']}")
+        return {"status": "error", "message": f"Platform '{platform}' is not allowed"}
+    
+    try:
+        # First, extract the video URL from the playlist
+        with yt_dlp.YoutubeDL({
+            'skip_download': True, 
+            'quiet': True, 
+            'noplaylist': False,
+            'extract_flat': True,
+            'playliststart': index + 1,  # 1-based index
+            'playlistend': index + 1,
+            'socket_timeout': 30,
+            'ignoreerrors': True
+        }) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            if not info or 'entries' not in info or not info['entries']:
+                return {"status": "error", "message": f"Could not find item at index {index}"}
+            
+            entries = list(info.get('entries', []))
+            
+            if not entries:
+                return {"status": "error", "message": f"No valid entries found at index {index}"}
+            
+            entry = entries[0]
+            if not entry or entry.get('id') is None:
+                return {"status": "error", "message": f"Item at index {index} is unavailable"}
+            
+            video_id = entry.get('id')
+            video_title = entry.get('title', f'Unknown Track {index}')
+            video_url = entry.get('url', f"https://www.youtube.com/watch?v={video_id}")
+            
+            # Now download the individual video
+            logger.logger.info(f"Downloading playlist item: {video_title} ({video_url})")
+            
+            result = audio.download(
+                video_url, 
+                config["download_path"], 
+                db,
+                max_duration_seconds=max_duration_seconds, 
+                max_size_mb=max_size_mb, 
+                allow_live=allow_live
+            )
+            
+            elapsed = time.time() - start_time
+            
+            if not result:
+                logger.logger.error(f"Download failed for playlist item after {elapsed:.2f} seconds")
+                return {"status": "error", "message": f"Download failed for item {index}"}
+            
+            logger.logger.info(f"Playlist item download completed in {elapsed:.2f} seconds")
+            logger.logger.info(f"Downloaded: {result.get('title', 'Unknown')}")
+            
+            # Add to playlist in database if needed
+            try:
+                db_playlist = db.get_playlist_by_url(url)
+                
+                if db_playlist and 'id' in result:
+                    song_id = result['id']
+                    try:
+                        db.add_song_to_playlist(db_playlist['id'], song_id, index)
+                        logger.logger.info(f"Added song ID {song_id} to playlist ID {db_playlist['id']}")
+                    except Exception as e:
+                        logger.logger.error(f"Error adding song to playlist: {e}")
+            except Exception as e:
+                logger.logger.error(f"Error handling playlist database operations: {e}")
+            
+            return {
+                "status": "success",
+                "title": result.get('title', video_title),
+                "filename": result.get('filename', ''),
+                "duration": result.get('duration'),
+                "file_size": result.get('file_size'),
+                "platform": result.get('platform', platform),
+                "artist": result.get('artist', ''),
+                "thumbnail_url": result.get('thumbnail_url', ''),
+                "is_stream": result.get('is_stream', False),
+                "id": result.get('id'),
+                "index": index
+            }
+    except Exception as e:
+        elapsed = time.time() - start_time
+        logger.logger.error(f"Error in download_playlist_item after {elapsed:.2f} seconds: {e}")
         logger.logger.debug(f"Traceback: {traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
 

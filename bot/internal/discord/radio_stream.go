@@ -12,6 +12,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"layeh.com/gopus"
+	"quidque.com/discord-musican/internal/audio"
 	"quidque.com/discord-musican/internal/logger"
 )
 
@@ -98,61 +99,79 @@ func (rs *RadioStreamer) SetVolume(volume float32) {
 }
 
 func (rs *RadioStreamer) Start() {
-	rs.mu.Lock()
-	if rs.isPaused {
-		rs.isPaused = false
-		rs.mu.Unlock()
-		return
-	}
-	
-	if rs.isActive {
-		rs.mu.Unlock()
-		return
-	}
-	
-	rs.isActive = true
-	rs.mu.Unlock()
-	
-	// Stop any currently playing music
-	rs.client.StopAllPlayback()
-	
-	go rs.streamLoop()
+    rs.mu.Lock()
+    if rs.isPaused {
+        rs.isPaused = false
+        rs.mu.Unlock()
+        logger.InfoLogger.Println("Radio streamer resumed from paused state")
+        return
+    }
+    
+    if rs.isActive {
+        rs.mu.Unlock()
+        logger.InfoLogger.Println("Radio streamer already active, ignoring start request")
+        return
+    }
+    
+    rs.isActive = true
+    streamURL := rs.streamURL
+    volume := rs.volume
+    rs.mu.Unlock()
+    
+    logger.InfoLogger.Printf("Starting radio streamer with URL: %s and volume: %.2f", streamURL, volume)
+    
+    // Don't stop all playback here, just ensure we're the only active audio source
+    rs.client.mu.Lock()
+    for guildID, player := range rs.client.players {
+        if player != nil {
+            logger.InfoLogger.Printf("Stopping player in guild %s for radio start", guildID)
+            player.Stop()
+        }
+    }
+    rs.client.players = make(map[string]*audio.Player)
+    rs.client.mu.Unlock()
+    
+    go rs.streamLoop()
 }
 
 func (rs *RadioStreamer) streamLoop() {
-	for {
-		rs.mu.RLock()
-		active := rs.isActive
-		rs.mu.RUnlock()
-		
-		if !active {
-			return
-		}
-		
-		vc, ok := rs.client.GetCurrentVoiceConnection()
-		if !ok || vc == nil {
-			logger.ErrorLogger.Println("Cannot start radio stream: not connected to a voice channel")
-			time.Sleep(5 * time.Second)
-			continue
-		}
-		
-		logger.InfoLogger.Printf("Starting radio stream from URL: %s", rs.streamURL)
-		err := rs.streamAudio(vc)
-		
-		rs.mu.RLock()
-		active = rs.isActive
-		rs.mu.RUnlock()
-		
-		if !active {
-			return
-		}
-		
-		if err != nil {
-			logger.ErrorLogger.Printf("Radio stream error: %v", err)
-			time.Sleep(5 * time.Second)
-		}
-	}
+    for {
+        rs.mu.RLock()
+        active := rs.isActive
+        rs.mu.RUnlock()
+        
+        if !active {
+            logger.InfoLogger.Println("Radio stream loop ending: not active")
+            return
+        }
+        
+        vc, ok := rs.client.GetCurrentVoiceConnection()
+        if !ok || vc == nil {
+            logger.ErrorLogger.Println("Cannot start radio stream: not connected to a voice channel")
+            time.Sleep(5 * time.Second)
+            continue
+        }
+        
+        logger.InfoLogger.Printf("Starting radio stream from URL: %s", rs.streamURL)
+        err := rs.streamAudio(vc)
+        
+        rs.mu.RLock()
+        active = rs.isActive
+        rs.mu.RUnlock()
+        
+        if !active {
+            logger.InfoLogger.Println("Radio stream loop ending: no longer active after stream attempt")
+            return
+        }
+        
+        if err != nil {
+            logger.ErrorLogger.Printf("Radio stream error: %v", err)
+            logger.InfoLogger.Println("Will retry radio stream in 5 seconds...")
+            time.Sleep(5 * time.Second)
+        }
+    }
 }
+
 
 func (rs *RadioStreamer) Stop() {
 	rs.mu.Lock()

@@ -155,35 +155,43 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 	
-	// Stop radio explicitly when a playlist is requested
+	// Check if we need to join a voice channel
+	client.mu.Lock()
+	currentVc, vcExists := client.voiceConnections[i.GuildID]
+	joinNeeded := !vcExists || currentVc == nil || currentVc.ChannelID != channelID
+	client.mu.Unlock()
+	
+	// If we need to join a voice channel, do so
+	if joinNeeded {
+		err = client.JoinVoiceChannel(i.GuildID, channelID)
+		if err != nil {
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
+			})
+			return
+		}
+	}
+	
+	// Stop radio if it's playing, but don't stop music
 	client.mu.Lock()
 	isInIdleMode := client.isInIdleMode
 	radioStreamer := client.radioStreamer
 	client.isInIdleMode = false
 	client.mu.Unlock()
 	
-	// Stop radio before processing the playlist
 	if isInIdleMode && radioStreamer != nil {
 		logger.InfoLogger.Println("Stopping radio before playlist playback")
 		radioStreamer.Stop()
 		time.Sleep(300 * time.Millisecond)
 	}
 	
-	// Continue with idle mode disabling
 	client.DisableIdleMode()
 	
-	err = client.JoinVoiceChannel(i.GuildID, channelID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
-		})
-		return
-	}
-	
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr("⏳ Processing playlist... This might take a while."),
+		Content: stringPtr("⏳ Processing playlist... This may take a while."),
 	})
 	
+	// Use proper download_playlist function for playlists
 	tracks, err := client.udsClient.DownloadPlaylist(url, maxItems, DefaultMaxDuration, DefaultMaxSize, false)
 	if err != nil {
 		// Handle specific errors for unavailable videos
@@ -192,6 +200,21 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 				Content: stringPtr("⚠️ The playlist contains unavailable videos. Processing available videos..."),
 			})
 		} else {
+			// Fallback: try as single track if playlist fails
+			track, singleErr := client.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
+			if singleErr == nil && track != nil && track.FilePath != "" {
+				track.Requester = i.Member.User.Username
+				track.RequestedAt = time.Now().Unix()
+				
+				// Queue the track without stopping current playback
+				client.QueueTrackWithoutStarting(i.GuildID, track)
+				
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+					Content: stringPtr(fmt.Sprintf("✅ Added single track to queue: **%s**", track.Title)),
+				})
+				return
+			}
+			
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 				Content: stringPtr(fmt.Sprintf("❌ Failed to download playlist: %s", err.Error())),
 			})
@@ -200,27 +223,13 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	}
 	
 	if len(tracks) == 0 {
-		// Try to download the first track directly
-		firstTrack, err := client.udsClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
-		if err != nil || firstTrack == nil || firstTrack.FilePath == "" {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr("❌ No playable tracks found in the playlist."),
-			})
-			return
-		}
-		
-		// Add and play the first track
-		firstTrack.Requester = i.Member.User.Username
-		firstTrack.RequestedAt = time.Now().Unix()
-		client.AddTrackToQueue(i.GuildID, firstTrack)
-		
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("✅ Added 1 song from playlist: **%s**", firstTrack.Title)),
+			Content: stringPtr("❌ No playable tracks found in the playlist."),
 		})
 		return
 	}
 	
-	// Add tracks to queue
+	// Add tracks to queue without stopping current playback
 	validTracks := 0
 	for _, track := range tracks {
 		// Skip tracks without file paths
@@ -238,28 +247,53 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		track.Requester = i.Member.User.Username
 		track.RequestedAt = time.Now().Unix()
 		
-		// For first track, add it directly and start player
-		if validTracks == 0 {
-			client.AddTrackToQueue(i.GuildID, track)
-			logger.InfoLogger.Printf("First track from playlist added: %s", track.Title)
-		} else {
-			// For subsequent tracks, ensure they're just queued, not played immediately
-			client.QueueTrackWithoutStarting(i.GuildID, track)
-			logger.InfoLogger.Printf("Additional track from playlist queued: %s", track.Title)
+		// Queue tracks without starting playback
+		client.QueueTrackWithoutStarting(i.GuildID, track)
+		logger.InfoLogger.Printf("Track from playlist queued: %s", track.Title)
+
+		// Update progress occasionally
+		if validTracks == 0 || validTracks%5 == 0 {
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr(fmt.Sprintf("✅ Added %d tracks to queue so far...", validTracks+1)),
+			})
 		}
+		
 		validTracks++
 	}
 	
+	// Get current track and queue to check if we need to start playback
+	client.mu.Lock()
+	currentTrack := client.GetCurrentTrack(i.GuildID)
+	client.mu.Unlock()
+	
+	// If nothing is currently playing, start the first track
+	if currentTrack == nil {
+		client.mu.Lock()
+		if player, exists := client.players[i.GuildID]; exists && player != nil {
+			client.mu.Unlock()
+			// Player exists but no current track, try to start
+			player.Skip()
+		} else if len(client.songQueues[i.GuildID]) > 0 {
+			client.mu.Unlock()
+			// Queue has songs but no player, start player
+			client.mu.Lock()
+			client.startPlayer(i.GuildID)
+			client.mu.Unlock()
+		} else {
+			client.mu.Unlock()
+		}
+	}
+	
+	// Final update with completion message
 	if validTracks == 0 {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ No valid tracks found in the playlist. Files may be missing or corrupted."),
 		})
-		return
+	} else {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr(fmt.Sprintf("✅ Added %d tracks from playlist to the queue!", validTracks)),
+		})
 	}
-	
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(fmt.Sprintf("✅ Added %d songs from playlist to the queue!", validTracks)),
-	})
 }
 
 type SearchCommand struct{}

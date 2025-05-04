@@ -145,6 +145,139 @@ func (c *Client) SendRequest(command string, params interface{}) (*Response, err
 	return &response, nil
 }
 
+func (c *Client) DownloadPlaylistItem(url string, index int, maxDuration int, maxSize int, allowLive bool) (*audio.Track, error) {
+	logger.InfoLogger.Printf("UDS: Downloading playlist item %d from URL: %s", index, url)
+	params := map[string]interface{}{
+		"url":                  url,
+		"index":                index,
+		"max_duration_seconds": maxDuration,
+		"max_size_mb":          maxSize,
+		"allow_live":           allowLive,
+	}
+	
+	timeout := c.timeout
+	newTimeout := 3 * 60 * time.Second
+	logger.InfoLogger.Printf("UDS: Setting timeout from %v to %v for playlist item download", timeout, newTimeout)
+	c.SetTimeout(newTimeout)
+	defer c.SetTimeout(timeout)
+	
+	startTime := time.Now()
+	response, err := c.SendRequest("download_playlist_item", params)
+	if err != nil {
+		logger.ErrorLogger.Printf("UDS: Download playlist item failed: %v", err)
+		return nil, err
+	}
+	
+	logger.InfoLogger.Printf("UDS: Download playlist item completed in %v", time.Since(startTime))
+	
+	if response.Status != "success" {
+		errMsg := "Playlist item download failed"
+		if response.Error != "" {
+			errMsg = response.Error
+		}
+		logger.ErrorLogger.Printf("UDS: Playlist item download error: %s", errMsg)
+		return nil, errors.New(errMsg)
+	}
+	
+	track := &audio.Track{
+		URL:          url,
+		Requester:    "",
+		RequestedAt:  time.Now().Unix(),
+		Position:     index,
+	}
+	
+	if data, ok := response.Data["title"].(string); ok {
+		track.Title = data
+	} else {
+		track.Title = fmt.Sprintf("Unknown Track %d", index+1)
+	}
+	
+	if data, ok := response.Data["filename"].(string); ok {
+		track.FilePath = data
+		// Validate file path
+		if track.FilePath != "" {
+			if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+				logger.WarnLogger.Printf("UDS: File path exists in response but file not found: %s", track.FilePath)
+				return nil, fmt.Errorf("file not found: %s", track.FilePath)
+			}
+		} else {
+			logger.WarnLogger.Println("UDS: Empty file path received in response")
+			return nil, errors.New("empty file path in response")
+		}
+	}
+	
+	if data, ok := response.Data["duration"].(float64); ok {
+		track.Duration = int(data)
+	}
+	
+	if data, ok := response.Data["artist"].(string); ok {
+		track.ArtistName = data
+	}
+	
+	if data, ok := response.Data["thumbnail_url"].(string); ok {
+		track.ThumbnailURL = data
+	}
+	
+	if data, ok := response.Data["is_stream"].(bool); ok {
+		track.IsStream = data
+	}
+	
+	track.DownloadStatus = "completed"
+	
+	// Log important track info
+	logger.InfoLogger.Printf("UDS: Playlist item processed - Title: %s, FilePath: %s", track.Title, track.FilePath)
+	
+	return track, nil
+}
+
+func (c *Client) GetPlaylistInfo(url string, maxItems int) (string, int, error) {
+	logger.InfoLogger.Printf("UDS: Getting playlist info for URL: %s, max items: %d", url, maxItems)
+	params := map[string]interface{}{
+		"url":       url,
+		"max_items": maxItems,
+	}
+	
+	response, err := c.SendRequest("get_playlist_info", params)
+	if err != nil {
+		logger.ErrorLogger.Printf("UDS: Get playlist info failed: %v", err)
+		return "", 0, err
+	}
+	
+	var playlistTitle string
+	var totalTracks int
+	
+	if data, ok := response.Data["playlist_title"].(string); ok {
+		playlistTitle = data
+	} else {
+		playlistTitle = "Unknown Playlist"
+	}
+	
+	if data, ok := response.Data["total_tracks"].(float64); ok {
+		totalTracks = int(data)
+		if totalTracks > maxItems {
+			totalTracks = maxItems
+		}
+	} else {
+		totalTracks = maxItems
+	}
+	
+	isPlaylist := false
+	if data, ok := response.Data["is_playlist"].(bool); ok {
+		isPlaylist = data
+	}
+	
+	if !isPlaylist {
+		// This is a single track, not a playlist
+		return playlistTitle, 1, nil
+	}
+	
+	logger.InfoLogger.Printf("UDS: Playlist info retrieved - Title: %s, Total tracks: %d", 
+		playlistTitle, totalTracks)
+	
+	return playlistTitle, totalTracks, nil
+}
+
+
 func (c *Client) Ping() error {
 	logger.InfoLogger.Println("UDS: Sending ping request")
 	params := map[string]string{
@@ -257,7 +390,7 @@ func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, max
 	defer c.SetTimeout(timeout)
 	
 	startTime := time.Now()
-	response, err := c.SendRequest("download_playlist", params)
+	response, err := c.SendRequest("download_playlist", params) // Make sure to use download_playlist
 	if err != nil {
 		logger.ErrorLogger.Printf("UDS: Download playlist failed: %v", err)
 		return nil, err

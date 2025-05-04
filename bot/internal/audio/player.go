@@ -37,6 +37,7 @@ type Player struct {
 	currentTrack  *Track
 	queue         []*Track
 	playbackCount int
+	skipFlag      bool // Added flag to indicate skip operation
 }
 
 type PlayerEventHandler func(event string, data interface{})
@@ -54,6 +55,7 @@ func NewPlayer(vc *discordgo.VoiceConnection) *Player {
 		volumeLevel: 0.5,
 		state:       StateStopped,
 		queue:       make([]*Track, 0),
+		skipFlag:    false,
 	}
 }
 
@@ -93,15 +95,23 @@ func (p *Player) GetCurrentTrack() *Track {
 }
 
 func (p *Player) Skip() {
-	if p.state == StatePlaying || p.state == StatePaused {
-		p.Stop()
-		go p.playNextTrack()
+	p.Lock()
+	if p.state != StateStopped {
+		p.skipFlag = true // Set the skip flag
+		select {
+		case p.stopChan <- true:
+		default:
+		}
+		p.state = StateStopped
 	}
+	p.Unlock()
+	// Don't call playNextTrack here, let the playTrack function handle it
 }
 
 func (p *Player) Stop() {
 	p.Lock()
 	if p.state != StateStopped {
+		p.skipFlag = false // Make sure skip flag is off for regular stops
 		select {
 		case p.stopChan <- true:
 		default:
@@ -144,6 +154,7 @@ func (p *Player) playNextTrack() {
 	p.queue = p.queue[1:]
 	p.currentTrack = track
 	p.state = StatePlaying
+	p.skipFlag = false // Reset skip flag
 	p.Unlock()
 	
 	for _, handler := range eventHandlers {
@@ -254,6 +265,7 @@ func (p *Player) playTrack(track *Track) {
 	p.Lock()
 	p.playbackCount++
 	p.stream = nil
+	skipFlag := p.skipFlag
 	
 	if p.state != StateStopped {
 		p.state = StateStopped
@@ -263,7 +275,14 @@ func (p *Player) playTrack(track *Track) {
 			handler("track_end", track)
 		}
 		
-		go p.playNextTrack()
+		// If this was a skip operation, we need to play the next track
+		if skipFlag {
+			logger.InfoLogger.Printf("Skip detected, playing next track")
+			go p.playNextTrack()
+		} else if err == io.EOF || err == io.ErrUnexpectedEOF {
+			// Only play next track automatically if this track ended naturally
+			go p.playNextTrack()
+		}
 	} else {
 		p.Unlock()
 	}

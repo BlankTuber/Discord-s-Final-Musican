@@ -3,14 +3,17 @@ package discord
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"quidque.com/discord-musican/internal/audio"
 	"quidque.com/discord-musican/internal/logger"
 )
 
-// AddTrackToQueue adds a track to the queue and starts playback if needed
 func (c *Client) AddTrackToQueue(guildID string, track *audio.Track) {
+	// Ensure everything is stopped before adding a new track
+	c.StopAllPlayback()
+	
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -37,6 +40,7 @@ func (c *Client) AddTrackToQueue(guildID string, track *audio.Track) {
 		}()
 	}
 }
+
 
 // GetQueueState returns the current queue and currently playing track
 func (c *Client) GetQueueState(guildID string) ([]*audio.Track, *audio.Track) {
@@ -151,7 +155,6 @@ func (c *Client) RemoveFromQueue(guildID string, position int) (bool, error) {
 	return true, nil
 }
 
-// startPlayer starts the audio player for a guild
 func (c *Client) startPlayer(guildID string) {
 	// This function is called with the mutex held
 
@@ -170,11 +173,16 @@ func (c *Client) startPlayer(guildID string) {
 	if c.isInIdleMode {
 		c.radioStreamer.Stop()
 		c.isInIdleMode = false
+		logger.InfoLogger.Println("Radio stopped for track playback")
 	}
 
 	// Create a player if we don't have one
 	if _, ok := c.players[guildID]; !ok {
 		c.players[guildID] = audio.NewPlayer(vc)
+	} else {
+		// If player exists, make sure it's stopped
+		c.players[guildID].Stop()
+		logger.InfoLogger.Println("Stopped existing player before starting new track")
 	}
 
 	player := c.players[guildID]
@@ -197,6 +205,7 @@ func (c *Client) startPlayer(guildID string) {
 		player.QueueTrack(nextTrack)
 	}()
 }
+
 
 // handlePlayerEvent handles events from the audio player
 func (c *Client) handlePlayerEvent(event string, data interface{}) {
@@ -271,4 +280,59 @@ func (c *Client) SyncQueueWithDatabase(guildID string) error {
 
 	c.songQueues[guildID] = queue
 	return nil
+}
+
+func (c *Client) BatchAddToQueue(guildID string, tracks []*audio.Track) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	// Make sure queue exists for this guild
+	if _, ok := c.songQueues[guildID]; !ok {
+		c.songQueues[guildID] = make([]*audio.Track, 0)
+	}
+	
+	validTracks := 0
+	for _, track := range tracks {
+		// Skip tracks without file paths
+		if track.FilePath == "" {
+			logger.WarnLogger.Printf("Skipping track without file path: %s", track.Title)
+			continue
+		}
+		
+		// Ensure file exists
+		if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+			logger.WarnLogger.Printf("Skipping track with missing file: %s", track.FilePath)
+			continue
+		}
+		
+		// Add track to queue
+		c.songQueues[guildID] = append(c.songQueues[guildID], track)
+		validTracks++
+	}
+	
+	// Check if we need to start playback
+	shouldStartPlayer := false
+	if _, exists := c.players[guildID]; !exists {
+		shouldStartPlayer = true
+	} else if c.players[guildID].GetCurrentTrack() == nil && len(c.songQueues[guildID]) > 0 {
+		shouldStartPlayer = true
+	}
+	
+	// Save the queue to the database
+	if c.dbManager != nil {
+		go func() {
+			err := c.dbManager.SaveQueue(guildID, c.songQueues[guildID])
+			if err != nil {
+				logger.ErrorLogger.Printf("Failed to save queue to database: %v", err)
+			}
+		}()
+	}
+	
+	// Start playback if needed
+	if shouldStartPlayer {
+		logger.InfoLogger.Printf("Starting player for guild %s after batch queue add", guildID)
+		go c.startPlayer(guildID)
+	}
+	
+	return validTracks
 }
