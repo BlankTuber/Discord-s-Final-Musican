@@ -37,6 +37,7 @@ type Player struct {
 	volumeLevel   float32
 	state         PlayerState
 	currentTrack  *Track
+    pausedTrack   *Track
 	queue         []*Track
 	playbackCount int
 	skipFlag      bool // Added flag to indicate skip operation
@@ -335,24 +336,48 @@ func (p *Player) playTrack(track *Track) {
     }
     
     p.Lock()
-	p.playbackCount++
-	p.stream = nil
-	skipFlag := p.skipFlag
-	currentState := p.state
-	p.state = StateStopped
-	p.Unlock()
+    p.playbackCount++
+    p.stream = nil
+    wasJustPaused := p.state == StatePaused
+    skipFlag := p.skipFlag
+    currentState := p.state
+    
+    if wasJustPaused {
+        p.pausedTrack = p.currentTrack  // Store the track for later resumption
+        p.state = StatePaused
+    } else {
+        p.state = StateStopped
+        if currentState != StateStopped {
+            p.Unlock()  // Unlock before event handlers
+            
+            for _, handler := range eventHandlers {
+                handler("track_end", track)
+            }
+            
+            if skipFlag {
+                logger.InfoLogger.Printf("Skip detected, playing next track")
+                go p.playNextTrack()
+            } else {
+                logger.InfoLogger.Printf("Track ended naturally or due to error, playing next track")
+                go p.playNextTrack()
+            }
+            return
+        }
+    }
+    p.Unlock()
+}
 
-	if currentState != StateStopped {
-		for _, handler := range eventHandlers {
-			handler("track_end", track)
-		}
-		
-		if skipFlag {
-			logger.InfoLogger.Printf("Skip detected, playing next track")
-			go p.playNextTrack()
-		} else {
-			logger.InfoLogger.Printf("Track ended naturally or due to error, playing next track")
-			go p.playNextTrack()
-		}
-	}
+func (p *Player) Resume() {
+    p.Lock()
+    if p.state == StatePaused && p.pausedTrack != nil {
+        track := p.pausedTrack
+        p.pausedTrack = nil
+        p.state = StatePlaying
+        p.Unlock()
+        
+        logger.InfoLogger.Printf("Resuming playback of: %s", track.Title)
+        go p.playTrack(track)
+        return
+    }
+    p.Unlock()
 }

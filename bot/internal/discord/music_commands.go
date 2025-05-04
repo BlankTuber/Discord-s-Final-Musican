@@ -937,22 +937,17 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
     playerPaused := playerExists && player != nil && player.GetState() == audio.StatePaused
     client.mu.RUnlock()
     
-    // If player is paused, just resume it
+    // If player is paused, use the new Resume function
     if playerPaused {
-        player.SetState(audio.StatePlaying)
-        // Restart the player with the current track
-        currentTrack := player.GetCurrentTrack()
-        if currentTrack != nil {
-            go player.QueueTrack(currentTrack)
-            
-            s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-                Content: stringPtr("▶️ Playback resumed!"),
-            })
-            return
-        }
+        player.Resume() // Using the new Resume function we added
+        
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("▶️ Playback resumed!"),
+        })
+        return
     }
 
-    // Get the current queue
+    // If not resuming, handle normal queue start
     queue, currentTrack := client.GetQueueState(i.GuildID)
 
     if len(queue) == 0 && currentTrack == nil {
