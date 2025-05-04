@@ -189,54 +189,57 @@ func (m *Manager) GetPopularTracks(limit int) ([]*audio.Track, error) {
 }
 
 func (m *Manager) GetRecentTracks(limit int) ([]*audio.Track, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+    m.mu.Lock()
+    defer m.mu.Unlock()
 
-	query := `SELECT id, title, url, platform, file_path, duration, file_size, 
-			thumbnail_url, artist, download_date, play_count, last_played, is_stream 
-			FROM songs WHERE last_played IS NOT NULL ORDER BY last_played DESC LIMIT ?`
+    query := `SELECT id, title, url, platform, file_path, duration, file_size, 
+            thumbnail_url, artist, download_date, play_count, last_played, is_stream 
+            FROM songs 
+            WHERE last_played IS NOT NULL AND last_played > 0
+            ORDER BY last_played DESC LIMIT ?`
 
-	rows, err := m.db.Query(query, limit)
-	if err != nil {
-		return nil, fmt.Errorf("error querying recent tracks: %w", err)
-	}
-	defer rows.Close()
+    rows, err := m.db.Query(query, limit)
+    if err != nil {
+        return nil, fmt.Errorf("error querying recent tracks: %w", err)
+    }
+    defer rows.Close()
 
-	tracks := make([]*audio.Track, 0, limit)
+    tracks := make([]*audio.Track, 0, limit)
 
-	for rows.Next() {
-		var id int64
-		var title, url, platform, filePath, thumbnailURL, artist string
-		var duration, fileSize, downloadDate, playCount, lastPlayed int64
-		var isStream bool
+    for rows.Next() {
+        var id int64
+        var title, url, platform, filePath, thumbnailURL, artist string
+        var duration, fileSize, downloadDate, playCount, lastPlayed int64
+        var isStream bool
 
-		err := rows.Scan(&id, &title, &url, &platform, &filePath, &duration, &fileSize,
-			&thumbnailURL, &artist, &downloadDate, &playCount, &lastPlayed, &isStream)
+        err := rows.Scan(&id, &title, &url, &platform, &filePath, &duration, &fileSize,
+            &thumbnailURL, &artist, &downloadDate, &playCount, &lastPlayed, &isStream)
 
-		if err != nil {
-			logger.ErrorLogger.Printf("Error scanning track row: %v", err)
-			continue
-		}
+        if err != nil {
+            logger.ErrorLogger.Printf("Error scanning track row: %v", err)
+            continue
+        }
 
-		track := &audio.Track{
-			Title:        title,
-			URL:          url,
-			Duration:     int(duration),
-			FilePath:     filePath,
-			ArtistName:   artist,
-			ThumbnailURL: thumbnailURL,
-			IsStream:     isStream,
-		}
+        track := &audio.Track{
+            Title:        title,
+            URL:          url,
+            Duration:     int(duration),
+            FilePath:     filePath,
+            ArtistName:   artist,
+            ThumbnailURL: thumbnailURL,
+            IsStream:     isStream,
+        }
 
-		tracks = append(tracks, track)
-	}
+        tracks = append(tracks, track)
+    }
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating tracks: %w", err)
-	}
+    if err := rows.Err(); err != nil {
+        return nil, fmt.Errorf("error iterating tracks: %w", err)
+    }
 
-	return tracks, nil
+    return tracks, nil
 }
+
 
 func (m *Manager) GetQueue(guildID string, includePlayed bool) ([]*audio.Track, error) {
 	m.mu.Lock()

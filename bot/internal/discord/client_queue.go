@@ -106,28 +106,32 @@ func (c *Client) GetQueueHistory(guildID string) ([]*audio.Track, error) {
 
 
 func (c *Client) GetCurrentTrack(guildID string) *audio.Track {
-	// First try to get from memory (for active playback)
-	c.mu.RLock()
-	if player, ok := c.players[guildID]; ok && player != nil {
-		track := player.GetCurrentTrack()
-		if track != nil {
-			c.mu.RUnlock()
-			return track
-		}
-	}
-	c.mu.RUnlock()
-	
-	// If not playing, try to get from database
-	if c.dbManager != nil {
-		track, err := c.dbManager.GetCurrentPlayingTrack(guildID)
-		if err != nil {
-			logger.ErrorLogger.Printf("Error getting current track from database: %v", err)
-		} else if track != nil {
-			return track
-		}
-	}
-	
-	return nil
+    // First try to get from active player
+    c.mu.RLock()
+    if player, ok := c.players[guildID]; ok && player != nil {
+        track := player.GetCurrentTrack()
+        playerState := player.GetState()
+        c.mu.RUnlock()
+        
+        // Return track if player is playing or paused
+        if track != nil && (playerState == audio.StatePlaying || playerState == audio.StatePaused) {
+            return track
+        }
+    } else {
+        c.mu.RUnlock()
+    }
+    
+    // If not playing, try to get from database
+    if c.dbManager != nil {
+        track, err := c.dbManager.GetCurrentPlayingTrack(guildID)
+        if err != nil {
+            logger.ErrorLogger.Printf("Error getting current track from database: %v", err)
+        } else if track != nil {
+            return track
+        }
+    }
+    
+    return nil
 }
 
 // SkipSong skips the current song and starts the next one

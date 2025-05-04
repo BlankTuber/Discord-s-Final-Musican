@@ -931,6 +931,27 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
         Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
     })
 
+    // Check if we have a paused player first
+    client.mu.RLock()
+    player, playerExists := client.players[i.GuildID]
+    playerPaused := playerExists && player != nil && player.GetState() == audio.StatePaused
+    client.mu.RUnlock()
+    
+    // If player is paused, just resume it
+    if playerPaused {
+        player.SetState(audio.StatePlaying)
+        // Restart the player with the current track
+        currentTrack := player.GetCurrentTrack()
+        if currentTrack != nil {
+            go player.QueueTrack(currentTrack)
+            
+            s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+                Content: stringPtr("▶️ Playback resumed!"),
+            })
+            return
+        }
+    }
+
     // Get the current queue
     queue, currentTrack := client.GetQueueState(i.GuildID)
 
@@ -940,13 +961,6 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
         })
         return
     }
-
-    // Combine currentTrack and queue
-    allTracks := make([]*audio.Track, 0)
-    if currentTrack != nil {
-        allTracks = append(allTracks, currentTrack)
-    }
-    allTracks = append(allTracks, queue...)
 
     // Make sure the bot is in a voice channel
     channelID, err := client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
@@ -966,16 +980,40 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
         return
     }
 
-    // Clear the queue
-    client.ClearQueue(i.GuildID)
+    // Add a method to Player to set state
+    validTracks := make([]*audio.Track, 0)
     
-    // Add all tracks back to the queue in one batch operation
-    client.BatchAddTracksToQueue(i.GuildID, allTracks)
+    // Check track files before adding them
+    if currentTrack != nil && currentTrack.FilePath != "" {
+        if _, err := os.Stat(currentTrack.FilePath); err == nil {
+            validTracks = append(validTracks, currentTrack)
+        }
+    }
+    
+    for _, track := range queue {
+        if track.FilePath != "" {
+            if _, err := os.Stat(track.FilePath); err == nil {
+                validTracks = append(validTracks, track)
+            }
+        }
+    }
+    
+    if len(validTracks) == 0 {
+        s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+            Content: stringPtr("❌ No valid tracks found in the queue. Files may be missing."),
+        })
+        return
+    }
+
+    // Clear the queue and restart
+    client.ClearQueue(i.GuildID)
+    client.BatchAddTracksToQueue(i.GuildID, validTracks)
 
     s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
         Content: stringPtr("▶️ Queue started!"),
     })
 }
+
 
 // Add PauseCommand
 type PauseCommand struct{}

@@ -101,7 +101,10 @@ func (p *Player) Pause() {
     defer p.Unlock()
     
     if p.state == StatePlaying {
-        // Stop the current playback
+        // Set state to paused but don't actually stop playback yet
+        p.state = StatePaused
+        
+        // Send stop signal but with skipFlag false
         select {
         case p.stopChan <- true:
             // Message sent successfully
@@ -111,9 +114,14 @@ func (p *Player) Pause() {
             p.stopChan <- true
         }
         
-        p.state = StatePaused
         logger.InfoLogger.Println("Playback paused")
     }
+}
+
+func (p *Player) SetState(state PlayerState) {
+    p.Lock()
+    defer p.Unlock()
+    p.state = state
 }
 
 
@@ -121,6 +129,8 @@ func (p *Player) Skip() {
     p.Lock()
     if p.state != StateStopped {
         p.skipFlag = true // Set the skip flag before stopping
+        p.state = StateStopped // Explicitly set state to stopped, not paused
+        
         select {
         case p.stopChan <- true:
             // Message sent successfully
@@ -132,6 +142,7 @@ func (p *Player) Skip() {
     }
     p.Unlock()
 }
+
 
 
 
