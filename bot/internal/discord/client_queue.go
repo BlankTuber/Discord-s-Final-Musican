@@ -209,22 +209,22 @@ func (c *Client) startPlayer(guildID string) {
 
 // handlePlayerEvent handles events from the audio player
 func (c *Client) handlePlayerEvent(event string, data interface{}) {
-	switch event {
-	case "track_start":
-		if track, ok := data.(*audio.Track); ok {
-			logger.InfoLogger.Printf("Started playing track: %s", track.Title)
-			c.session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", track.Title))
+    switch event {
+    case "track_start":
+        if track, ok := data.(*audio.Track); ok {
+            logger.InfoLogger.Printf("Started playing track: %s", track.Title)
+            c.session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", track.Title))
 
-			// Update database play count
-			if c.dbManager != nil && track.URL != "" {
-				go func() {
-					if err := c.dbManager.IncrementPlayCount(track.URL); err != nil {
-						logger.ErrorLogger.Printf("Failed to update play count: %v", err)
-					}
-				}()
-			}
-		}
-	case "track_end":
+            // Update database play count
+            if c.dbManager != nil && track.URL != "" {
+                go func() {
+                    if err := c.dbManager.IncrementPlayCount(track.URL); err != nil {
+                        logger.ErrorLogger.Printf("Failed to update play count: %v", err)
+                    }
+                }()
+            }
+        }
+    case "track_end":
         if track, ok := data.(*audio.Track); ok {
             logger.InfoLogger.Printf("Finished playing track: %s", track.Title)
 
@@ -236,33 +236,37 @@ func (c *Client) handlePlayerEvent(event string, data interface{}) {
             }
             c.mu.RUnlock()
 
-            // Process each guild separately, checking if it needs the next song
+            // Check if there are songs in the queue for any guild 
+            // and start playing the next one if available
             for _, guildID := range guildsToCheck {
-                c.mu.RLock()
-                player, playerExists := c.players[guildID]
+                c.mu.Lock()
+                _, playerExists := c.players[guildID]
                 queueExists := len(c.songQueues[guildID]) > 0
-                c.mu.RUnlock()
+                c.mu.Unlock()
 
-                if playerExists && player.GetCurrentTrack() == nil && queueExists {
+                // If we have a player and songs in the queue, start the next song
+                if playerExists && queueExists {
                     c.mu.Lock()
-                    if len(c.songQueues[guildID]) > 0 { // Double check queue still has songs
+                    // Double check while we have the lock
+                    if len(c.songQueues[guildID]) > 0 {
                         c.startPlayer(guildID)
+                        c.mu.Unlock()
+                        return // Exit early once we've started a player
                     }
                     c.mu.Unlock()
-                    break // Found the guild that needs the next song
                 }
             }
         }
-	case "queue_end":
-		logger.InfoLogger.Println("Queue ended")
-		c.session.UpdateGameStatus(0, "Queue is empty | Use /play")
+    case "queue_end":
+        logger.InfoLogger.Println("Queue ended")
+        c.session.UpdateGameStatus(0, "Queue is empty | Use /play")
 
-		// Wait a bit and then check if we should return to idle mode
-		go func() {
-			time.Sleep(5 * time.Second)
-			c.checkIdleState()
-		}()
-	}
+        // Wait a bit and then check if we should return to idle mode
+        go func() {
+            time.Sleep(5 * time.Second)
+            c.checkIdleState()
+        }()
+    }
 }
 
 // SyncQueueWithDatabase loads the queue from the database if it's not in memory

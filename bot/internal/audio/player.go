@@ -96,27 +96,23 @@ func (p *Player) GetCurrentTrack() *Track {
 	return p.currentTrack
 }
 
-// In audio/player.go - Replace the Skip function with this:
 func (p *Player) Skip() {
     p.Lock()
-    wasPlaying := p.state == StatePlaying
     if p.state != StateStopped {
-        p.skipFlag = true // Set the skip flag
+        p.skipFlag = true // Set the skip flag before stopping
         select {
         case p.stopChan <- true:
+            // Message sent successfully
         default:
+            // Channel is full, create a new one
+            p.stopChan = make(chan bool, 1)
+            p.stopChan <- true
         }
-        p.state = StateStopped
     }
     p.Unlock()
-    
-    // If we were playing something, immediately trigger the next track
-    if wasPlaying {
-        // Small delay to ensure clean stop
-        time.Sleep(100 * time.Millisecond)
-        go p.playNextTrack()
-    }
 }
+
+
 
 func (p *Player) Stop() {
     p.Lock()
@@ -307,24 +303,24 @@ func (p *Player) playTrack(track *Track) {
     }
     
     p.Lock()
-    p.playbackCount++
-    p.stream = nil
-    skipFlag := p.skipFlag
-    currentState := p.state
-    p.state = StateStopped
-    p.Unlock()
-    
-    if currentState != StateStopped {
-        for _, handler := range eventHandlers {
-            handler("track_end", track)
-        }
-        
-        if skipFlag {
-            logger.InfoLogger.Printf("Skip detected, playing next track")
-            go p.playNextTrack()
-        } else {
-            logger.InfoLogger.Printf("Track ended naturally or due to error, playing next track")
-            go p.playNextTrack()
-        }
-    }
+	p.playbackCount++
+	p.stream = nil
+	skipFlag := p.skipFlag
+	currentState := p.state
+	p.state = StateStopped
+	p.Unlock()
+
+	if currentState != StateStopped {
+		for _, handler := range eventHandlers {
+			handler("track_end", track)
+		}
+		
+		if skipFlag {
+			logger.InfoLogger.Printf("Skip detected, playing next track")
+			go p.playNextTrack()
+		} else {
+			logger.InfoLogger.Printf("Track ended naturally or due to error, playing next track")
+			go p.playNextTrack()
+		}
+	}
 }
