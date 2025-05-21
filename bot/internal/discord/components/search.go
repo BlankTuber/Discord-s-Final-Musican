@@ -46,7 +46,6 @@ func (h *SearchButtonHandler) ParseButtonID(customID string) (trackIndex int, gu
 	return trackIndex, parts[2], parts[3], nil
 }
 
-// Handle handles search button interactions
 func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Respond immediately to prevent timeout
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -62,6 +61,9 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ Error processing button. Please try searching again."),
 		})
+
+		// Disable buttons
+		disableButtons(s, i.Message.ID, i.ChannelID)
 		return
 	}
 
@@ -111,6 +113,9 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ Search results expired or invalid. Please search again."),
 		})
+
+		// Disable buttons
+		disableButtons(s, i.Message.ID, i.ChannelID)
 		return
 	}
 
@@ -123,6 +128,9 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ You need to be in a voice channel to play music."),
 		})
+
+		// Disable buttons
+		disableButtons(s, i.Message.ID, i.ChannelID)
 		return
 	}
 
@@ -135,12 +143,18 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr(fmt.Sprintf("❌ Failed to join voice channel: %s", err.Error())),
 		})
+
+		// Disable buttons
+		disableButtons(s, i.Message.ID, i.ChannelID)
 		return
 	}
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(fmt.Sprintf("🔍 Selected: **%s**\n⏳ Downloading...", selectedTrack.Title)),
 	})
+
+	// Disable buttons immediately after selection
+	disableButtons(s, i.Message.ID, i.ChannelID)
 
 	// Once we've processed the button, remove the entry from cache to prevent issues
 	h.client.Mu.Lock()
@@ -182,16 +196,18 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(fmt.Sprintf("✅ Added to queue: **%s**", track.Title)),
 	})
+}
 
-	// Disable buttons after processing
-	logger.InfoLogger.Printf("Disabling buttons on message: %s", i.Message.ID)
+// Helper function to disable buttons on a message
+func disableButtons(s *discordgo.Session, messageID, channelID string) {
+	logger.InfoLogger.Printf("Disabling buttons on message: %s", messageID)
 	emptyComponents := []discordgo.MessageComponent{}
 	editMsg := &discordgo.MessageEdit{
-		ID:         i.Message.ID,
-		Channel:    i.ChannelID,
+		ID:         messageID,
+		Channel:    channelID,
 		Components: &emptyComponents,
 	}
-	_, err = s.ChannelMessageEditComplex(editMsg)
+	_, err := s.ChannelMessageEditComplex(editMsg)
 	if err != nil {
 		logger.ErrorLogger.Printf("Error disabling buttons: %v", err)
 	}

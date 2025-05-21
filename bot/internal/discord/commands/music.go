@@ -535,8 +535,14 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
+	// Stop any current playback before starting new one
+	c.client.VoiceManager.StopAllPlayback()
+	time.Sleep(300 * time.Millisecond)
+
 	// Clear the queue and restart
 	c.client.QueueManager.ClearQueue(i.GuildID)
+
+	// Use AddTracks instead of repeated AddTrack calls
 	c.client.QueueManager.AddTracks(i.GuildID, validTracks)
 
 	// Start playback
@@ -658,8 +664,12 @@ func (c *SearchCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Use ephemeral response (only visible to the command user)
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
 	})
 
 	options := i.ApplicationCommandData().Options

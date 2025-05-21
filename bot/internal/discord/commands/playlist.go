@@ -168,24 +168,24 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	// Process each track individually
 	failedTracks := make([]string, 0)
 
-	for i := 0; i < totalTracks; i++ {
+	for idx := 0; idx < totalTracks; idx++ { // Changed 'i' to 'idx'
 		// Download the track
-		track, err := c.client.DownloaderClient.DownloadPlaylistItem(url, i, DefaultMaxDuration, DefaultMaxSize, false)
+		track, err := c.client.DownloaderClient.DownloadPlaylistItem(url, idx, DefaultMaxDuration, DefaultMaxSize, false)
 		if err != nil || track == nil || track.FilePath == "" || !fileExists(track.FilePath) {
 			mu.Lock()
 			failCount++
 			if track != nil && track.Title != "" {
 				failedTracks = append(failedTracks, track.Title)
 			} else {
-				failedTracks = append(failedTracks, fmt.Sprintf("Track #%d", i+1))
+				failedTracks = append(failedTracks, fmt.Sprintf("Track #%d", idx+1))
 			}
 			mu.Unlock()
-			logger.ErrorLogger.Printf("Failed to download playlist item %d: %v", i, err)
+			logger.ErrorLogger.Printf("Failed to download playlist item %d: %v", idx, err)
 			continue
 		}
 
 		// Set track metadata
-		track.Requester = "TestUser123"
+		track.Requester = i.Member.User.Username
 		track.RequestedAt = time.Now().Unix()
 
 		// Add to queue
@@ -197,7 +197,7 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 
 		// If this is the first successful track, notify about playback starting
 		if successCount == 1 {
-			c.client.StartPlayback(c.client.DefaultGuildID)
+			c.client.StartPlayback(i.GuildID)
 		}
 	}
 

@@ -293,6 +293,7 @@ func (vm *VoiceManager) handleTrackFinished(guildID string, track *audio.Track) 
 			vm.playbackStatus[guildID] = audio.StatePlaying
 			vm.mu.Unlock()
 
+			// Use a non-recursive approach to avoid stack overflow
 			go func() {
 				player.SetVolume(volume)
 				player.PlayTrack(nextTrack)
@@ -302,10 +303,10 @@ func (vm *VoiceManager) handleTrackFinished(guildID string, track *audio.Track) 
 
 				// Increment play count
 				vm.client.QueueManager.IncrementPlayCount(nextTrack)
-
-				// Handle track finished recursively
-				vm.handleTrackFinished(guildID, nextTrack)
 			}()
+
+			// Instead of calling handleTrackFinished recursively,
+			// let the player's event system trigger the next track
 		} else {
 			vm.mu.Unlock()
 		}
