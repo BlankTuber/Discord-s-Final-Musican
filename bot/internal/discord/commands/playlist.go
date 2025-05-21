@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	DefaultPlaylistMax    = 10
-	DefaultPlaylistMaxOpt = 20
+	DefaultPlaylistMax    = 7
+	DefaultPlaylistMaxOpt = 15
 	DefaultMaxDuration    = 600
-	DefaultMaxSize        = 50
-	MaxRetryAttempts      = 3
+	DefaultMaxSize        = 150
+	MaxRetryAttempts      = 2
 )
 
 type PlaylistCommand struct {

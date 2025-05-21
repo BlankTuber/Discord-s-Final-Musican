@@ -283,8 +283,8 @@ func (vm *VoiceManager) handleTrackFinished(guildID string, track *audio.Track) 
 	// Mark the track as played in the database
 	vm.client.QueueManager.MarkTrackAsPlayed(guildID, track)
 
-	// Check if there are more tracks in the queue
-	nextTrack := vm.client.QueueManager.GetNextTrack(guildID)
+	// Check if there are more tracks in the queue WITHOUT removing any
+	nextTrack := vm.client.QueueManager.PeekNextTrack(guildID)
 	if nextTrack != nil {
 		logger.InfoLogger.Printf("Next track: %s", nextTrack.Title)
 
@@ -297,7 +297,7 @@ func (vm *VoiceManager) handleTrackFinished(guildID string, track *audio.Track) 
 			return
 		}
 
-		// Play the next track
+		// Play the next track (this will call GetNextTrack internally)
 		vm.StartPlayingFromQueue(guildID)
 	} else {
 		// Queue is empty, update status

@@ -213,40 +213,6 @@ func (c *SkipCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 }
 
-// ClearCommand handles the /clear command
-type ClearCommand struct {
-	client *discord.Client
-}
-
-func NewClearCommand(client *discord.Client) *ClearCommand {
-	return &ClearCommand{
-		client: client,
-	}
-}
-
-func (c *ClearCommand) Name() string {
-	return "clear"
-}
-
-func (c *ClearCommand) Description() string {
-	return "Clear the queue"
-}
-
-func (c *ClearCommand) Options() []*discordgo.ApplicationCommandOption {
-	return []*discordgo.ApplicationCommandOption{}
-}
-
-func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "🧹 Queue cleared!",
-		},
-	})
-
-	c.client.QueueManager.ClearQueue(i.GuildID)
-}
-
 // NowPlayingCommand handles the /nowplaying command
 type NowPlayingCommand struct {
 	client *discord.Client

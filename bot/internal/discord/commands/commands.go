@@ -9,7 +9,7 @@ import (
 
 const (
 	DefaultSearchCount    = 5
-	DefaultSearchPlatform = "youtube"
+	DefaultSearchPlatform = "soundcloud"
 )
 
 // This file defines the base command interfaces and helper functions

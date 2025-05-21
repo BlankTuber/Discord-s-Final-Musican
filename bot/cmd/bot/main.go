@@ -79,7 +79,6 @@ func registerCommands(client *discord.Client) {
 	client.Router.RegisterCommand(commands.NewSearchCommand(client))
 	client.Router.RegisterCommand(commands.NewQueueCommand(client))
 	client.Router.RegisterCommand(commands.NewSkipCommand(client))
-	client.Router.RegisterCommand(commands.NewClearCommand(client))
 	client.Router.RegisterCommand(commands.NewNowPlayingCommand(client))
 	client.Router.RegisterCommand(commands.NewVolumeCommand(client))
 	client.Router.RegisterCommand(commands.NewStartCommand(client))

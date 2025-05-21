@@ -563,13 +563,26 @@ func (m *Manager) ClearQueue(guildID string) error {
 		return fmt.Errorf("error querying queue: %w", err)
 	}
 
-	// Delete all unplayed items
-	_, err = m.db.Exec(`
-		DELETE FROM queue_items 
-		WHERE queue_id = ? AND played = 0`,
-		queueID)
+	// Start a transaction to ensure consistency
+	tx, err := m.db.Begin()
 	if err != nil {
-		return fmt.Errorf("error clearing queue: %w", err)
+		return fmt.Errorf("error beginning transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Delete ALL items (both played and unplayed)
+	_, err = tx.Exec(`DELETE FROM queue_items WHERE queue_id = ?`, queueID)
+	if err != nil {
+		return fmt.Errorf("error clearing queue items: %w", err)
+	}
+
+	// Commit the transaction
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("error committing transaction: %w", err)
 	}
 
 	return nil

@@ -174,12 +174,14 @@ func (m *Manager) GetQueue(guildID string) []*audio.Track {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// If queue exists in memory, return a copy of it
 	if queue, ok := m.queues[guildID]; ok {
 		result := make([]*audio.Track, len(queue))
 		copy(result, queue)
 		return result
 	}
 
+	// Otherwise return an empty queue
 	return make([]*audio.Track, 0)
 }
 
@@ -270,6 +272,7 @@ func (m *Manager) ClearQueue(guildID string) {
 	defer m.mu.Unlock()
 
 	m.queues[guildID] = make([]*audio.Track, 0)
+	delete(m.currentTracks, guildID) // Also clear the current track reference
 
 	// Save the empty queue to the database
 	if m.dbManager != nil {
@@ -291,16 +294,19 @@ func (m *Manager) GetCurrentTrack(guildID string) *audio.Track {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// First check in-memory track
 	if track, ok := m.currentTracks[guildID]; ok {
 		return track
 	}
 
-	// If no current track in memory, try to get from database
+	// Try to get from database with error handling
 	if m.dbManager != nil {
 		track, err := m.dbManager.GetCurrentPlayingTrack(guildID)
-		if err == nil && track != nil {
-			return track
+		if err != nil {
+			logger.ErrorLogger.Printf("Error getting current track from database: %v", err)
+			return nil
 		}
+		return track
 	}
 
 	return nil
