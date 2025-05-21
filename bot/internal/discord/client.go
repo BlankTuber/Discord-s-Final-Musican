@@ -1,379 +1,328 @@
 package discord
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"quidque.com/discord-musican/internal/audio"
+	"quidque.com/discord-musican/internal/config"
 	"quidque.com/discord-musican/internal/database"
+	"quidque.com/discord-musican/internal/downloader"
 	"quidque.com/discord-musican/internal/logger"
-	"quidque.com/discord-musican/internal/uds"
+	"quidque.com/discord-musican/internal/queue"
 )
 
-type ClientConfig struct {
-	Token          string
-	ClientID       string
-	DefaultVolume  float32
-	DefaultGuildID string
-	DefaultVCID    string
-	RadioURL       string
-	IdleTimeout    int
-	UDSPath        string
-	DBPath         string
-}
-
 type Client struct {
-	token            string
-	clientID         string
-	session          *discordgo.Session
-	
-	voiceConnections map[string]*discordgo.VoiceConnection
-	currentVolume    float32
-	
-	songQueues       map[string][]*audio.Track
-	playbackStatus   map[string]string
-	players          map[string]*audio.Player
-	
-	commands         *CommandRegistry
-	
-	defaultGuildID   string
-	defaultVCID      string
-	radioURL         string
-	idleTimeout      int
-	radioStreamer    *RadioStreamer
-	
-	mu               sync.RWMutex
-	
-	lastActivityTime time.Time
-	idleCheckTicker  *time.Ticker
-	isInIdleMode     bool
-	idleModeDisabled bool
-	
-	udsClient        *uds.Client
-	dbManager        *database.Manager
-	
-	searchResultsCache map[string][]*audio.Track
-	componentHandlers  map[string]func(*discordgo.Session, *discordgo.InteractionCreate)
-	
-	stopChan         chan bool
+	Token    string
+	ClientID string
+	Session  *discordgo.Session
+	Router   *CommandRouter
+
+	VoiceManager     *VoiceManager
+	RadioManager     *RadioManager
+	QueueManager     *queue.Manager
+	DownloaderClient *downloader.Client
+	DBManager        *database.Manager
+
+	DefaultGuildID   string
+	DefaultVCID      string
+	IdleTimeout      int
+	LastActivityTime time.Time
+	IsInIdleMode     bool
+	IdleModeDisabled bool
+	IdleCheckTicker  *time.Ticker
+
+	SearchResultsCache map[string][]*audio.Track
 
 	CommandsEnabled bool
-	commandsMutex  sync.RWMutex
+	Mu              sync.RWMutex
+	stopChan        chan struct{}
 }
 
-func (c *Client) DisableCommands() {
-	c.commandsMutex.Lock()
-	defer c.commandsMutex.Unlock()
-	c.CommandsEnabled = false
-}
-
-func (c *Client) IsCommandsEnabled() bool {
-	c.commandsMutex.RLock()
-	defer c.commandsMutex.RUnlock()
-	return c.CommandsEnabled
-}
-
-func NewClient(config ClientConfig) (*Client, error) {
-	if config.Token == "" {
+func NewClient(cfg config.Config) (*Client, error) {
+	if cfg.DISCORD_TOKEN == "" {
 		return nil, errors.New("discord token is required")
 	}
-	
-	if config.ClientID == "" {
+
+	if cfg.CLIENT_ID == "" {
 		return nil, errors.New("client ID is required")
 	}
-	
-	if config.UDSPath == "" {
-		config.UDSPath = "/tmp/downloader.sock"
+
+	if cfg.UDS_PATH == "" {
+		cfg.UDS_PATH = "/tmp/downloader.sock"
 	}
-	
+
 	client := &Client{
-		token:            config.Token,
-		clientID:         config.ClientID,
-		currentVolume:    config.DefaultVolume,
-		voiceConnections: make(map[string]*discordgo.VoiceConnection),
-		songQueues:       make(map[string][]*audio.Track),
-		playbackStatus:   make(map[string]string),
-		players:          make(map[string]*audio.Player),
-		defaultGuildID:   config.DefaultGuildID,
-		defaultVCID:      config.DefaultVCID,
-		radioURL:         config.RadioURL,
-		idleTimeout:      config.IdleTimeout,
-		lastActivityTime: time.Now(),
-		isInIdleMode:     false,
-		idleModeDisabled: false,
-		searchResultsCache: make(map[string][]*audio.Track),
-		componentHandlers:  make(map[string]func(*discordgo.Session, *discordgo.InteractionCreate)),
-		stopChan:         make(chan bool),
+		Token:              cfg.DISCORD_TOKEN,
+		ClientID:           cfg.CLIENT_ID,
+		DefaultGuildID:     cfg.DEFAULT_GUILD_ID,
+		DefaultVCID:        cfg.DEFAULT_VC_ID,
+		IdleTimeout:        cfg.IDLE_TIMEOUT,
+		LastActivityTime:   time.Now(),
+		IsInIdleMode:       false,
+		IdleModeDisabled:   false,
+		SearchResultsCache: make(map[string][]*audio.Track),
+		CommandsEnabled:    true,
+		stopChan:           make(chan struct{}),
 	}
-	
-	session, err := discordgo.New("Bot " + config.Token)
+
+	// Initialize the Discord session
+	session, err := discordgo.New("Bot " + cfg.DISCORD_TOKEN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Discord session: %w", err)
 	}
-	
-	client.session = session
-	
-	client.radioStreamer = NewRadioStreamer(client, config.RadioURL, config.DefaultVolume)
-	
-	client.udsClient = uds.NewClient(config.UDSPath)
-	client.udsClient.SetTimeout(60 * time.Second)
-	
-	dbPath := filepath.Join("..", "shared", "musicbot.db")
-	if config.DBPath != "" {
-		dbPath = config.DBPath
-	}
-	
-	dbManager, err := database.NewManager(dbPath)
+	client.Session = session
+
+	// Initialize the downloader client
+	client.DownloaderClient = downloader.NewClient(cfg.UDS_PATH)
+
+	// Initialize the command router
+	client.Router = NewCommandRouter(client)
+
+	// Initialize the database manager
+	dbManager, err := database.NewManager(cfg.DB_PATH)
 	if err != nil {
 		logger.WarnLogger.Printf("Failed to connect to database: %v", err)
 		logger.WarnLogger.Println("Database features will be disabled")
 	} else {
 		logger.InfoLogger.Println("Successfully connected to database")
-		client.dbManager = dbManager
+		client.DBManager = dbManager
 	}
-	
+
+	// Initialize the queue manager
+	client.QueueManager = queue.NewManager(client.DBManager)
+	client.QueueManager.SetEventCallback(client.handleQueueEvent)
+
+	// Initialize the voice manager
+	client.VoiceManager = NewVoiceManager(client)
+
+	// Initialize the radio manager
+	client.RadioManager = NewRadioManager(client, cfg.RADIO_URL, cfg.VOLUME)
+
+	// Setup handlers
 	session.AddHandler(client.handleReady)
 	session.AddHandler(client.handleVoiceStateUpdate)
-	session.AddHandler(client.handleComponentInteraction)
-	
-	audio.RegisterPlayerEventHandler(client.handlePlayerEvent)
-	
-	client.setupCommandSystem()
-	client.initSearchComponents()
-	
-	session.Identify.Intents = discordgo.IntentsGuildVoiceStates | 
+	session.AddHandler(client.handleInteraction)
+	session.AddHandler(client.handleMessageCreate)
+
+	session.Identify.Intents = discordgo.IntentsGuildVoiceStates |
 		discordgo.IntentsGuilds | discordgo.IntentsGuildMessages
-	
+
 	return client, nil
 }
 
-func (c *Client) Connect() error {
-    err := c.session.Open()
-    if err != nil {
-        return err
-    }
-    
-    err = c.udsClient.Ping()
-    if err != nil {
-        logger.WarnLogger.Printf("Failed to ping downloader service: %v", err)
-        logger.WarnLogger.Println("Make sure the downloader service is running!")
-    } else {
-        logger.InfoLogger.Println("Successfully connected to downloader service")
-    }
-    
-    c.startIdleChecker()
-    c.CleanupSearchCache()
-    
-    // Delay idle mode start to ensure everything is initialized properly
-    go func() {
-        logger.InfoLogger.Println("Scheduling idle mode startup in 3 seconds...")
-        time.Sleep(3 * time.Second)
-        c.startIdleMode()
-    }()
-    
-    return c.RefreshSlashCommands()
-}
+// Downloader client will handle events from the downloader service
+func (c *Client) handleDownloaderEvent(eventType string, data map[string]any) {
+	switch eventType {
+	case "playlist_item_downloaded":
+		// When a playlist item is downloaded, add it to the queue
+		if trackData, ok := data["track"].(map[string]any); ok {
+			guildID, _ := data["guild_id"].(string)
+			if guildID == "" {
+				return
+			}
 
+			track := &audio.Track{}
 
-func (c *Client) StopAllPlayback() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	logger.InfoLogger.Println("Stopping all audio playback")
-	
-	// Stop radio if it's playing
-	if c.radioStreamer != nil {
-		c.radioStreamer.Stop()
-		logger.InfoLogger.Println("Radio streamer stopped")
-	}
-	
-	// Stop all players
-	for _, player := range c.players {
-		if player != nil {
-			player.Stop()
+			if title, ok := trackData["title"].(string); ok {
+				track.Title = title
+			}
+
+			if url, ok := trackData["url"].(string); ok {
+				track.URL = url
+			}
+
+			if filePath, ok := trackData["file_path"].(string); ok {
+				track.FilePath = filePath
+			}
+
+			if duration, ok := trackData["duration"].(float64); ok {
+				track.Duration = int(duration)
+			}
+
+			if artist, ok := trackData["artist"].(string); ok {
+				track.ArtistName = artist
+			}
+
+			if thumbnail, ok := trackData["thumbnail_url"].(string); ok {
+				track.ThumbnailURL = thumbnail
+			}
+
+			if requester, ok := data["requester"].(string); ok {
+				track.Requester = requester
+			}
+
+			track.RequestedAt = time.Now().Unix()
+
+			c.QueueManager.AddTrack(guildID, track)
 		}
 	}
-	
-	// Reset players map to ensure clean state
-	c.players = make(map[string]*audio.Player)
-	
-	// Wait a bit to ensure everything has stopped
-	c.mu.Unlock()
-	time.Sleep(200 * time.Millisecond)
-	c.mu.Lock()
+}
+
+func (c *Client) handleQueueEvent(event queue.QueueEvent) {
+	switch event.Type {
+	case queue.EventTrackAdded:
+		// Start playback if this is the first track
+		if c.QueueManager.GetQueueLength(event.GuildID) == 1 {
+			c.StartPlayback(event.GuildID)
+		}
+
+	case queue.EventTracksAdded:
+		// Start playback if these are the first tracks
+		if len(event.Tracks) > 0 && c.QueueManager.GetQueueLength(event.GuildID) == len(event.Tracks) {
+			c.StartPlayback(event.GuildID)
+		}
+	}
+}
+
+func (c *Client) StartPlayback(guildID string) {
+	// Make sure we're in a voice channel
+	if connected := c.VoiceManager.IsConnected(guildID); !connected {
+		logger.WarnLogger.Printf("Cannot start playback in guild %s: not connected to voice", guildID)
+		return
+	}
+
+	// Stop the radio if it's playing
+	if c.IsInIdleMode {
+		c.RadioManager.Stop()
+		c.IsInIdleMode = false
+		logger.InfoLogger.Println("Radio stopped for track playback")
+	}
+
+	// Start playing from the queue
+	c.VoiceManager.StartPlayingFromQueue(guildID)
+}
+
+func (c *Client) Connect() error {
+	// Connect to Discord
+	err := c.Session.Open()
+	if err != nil {
+		return fmt.Errorf("failed to connect to Discord: %w", err)
+	}
+
+	// Connect to the downloader service
+	err = c.DownloaderClient.Connect()
+	if err != nil {
+		logger.WarnLogger.Printf("Failed to connect to downloader service: %v", err)
+		logger.WarnLogger.Println("Make sure the downloader service is running!")
+	} else {
+		logger.InfoLogger.Println("Successfully connected to downloader service")
+
+		// Set up event handling from downloader
+		c.DownloaderClient.SetEventCallback(c.handleDownloaderEvent)
+	}
+
+	// Start the idle checker
+	c.startIdleChecker()
+
+	// Refresh slash commands
+	err = c.Router.RefreshSlashCommands()
+	if err != nil {
+		logger.ErrorLogger.Printf("Failed to refresh slash commands: %v", err)
+	}
+
+	// Schedule idle mode startup
+	go func() {
+		logger.InfoLogger.Println("Scheduling idle mode startup in 3 seconds...")
+		time.Sleep(3 * time.Second)
+		c.startIdleMode()
+	}()
+
+	return nil
 }
 
 func (c *Client) Disconnect() error {
-	if c.idleCheckTicker != nil {
-		c.idleCheckTicker.Stop()
+	// Stop the idle checker
+	if c.IdleCheckTicker != nil {
+		c.IdleCheckTicker.Stop()
 	}
-	
-	if c.radioStreamer != nil {
-		c.radioStreamer.Stop()
-	}
-	
+
+	// Stop the radio
+	c.RadioManager.Stop()
+
+	// Close the stop channel
 	close(c.stopChan)
-	
-	for guildID, vc := range c.voiceConnections {
-		if vc != nil {
-			vc.Disconnect()
-		}
-		delete(c.voiceConnections, guildID)
-	}
-	
-	if c.dbManager != nil {
-		if err := c.dbManager.Close(); err != nil {
+
+	// Disconnect from all voice channels
+	c.VoiceManager.DisconnectAll()
+
+	// Close the database connection
+	if c.DBManager != nil {
+		if err := c.DBManager.Close(); err != nil {
 			logger.ErrorLogger.Printf("Error closing database: %v", err)
 		}
 	}
-	
-	return c.session.Close()
+
+	// Disconnect from the downloader service
+	if c.DownloaderClient != nil {
+		if err := c.DownloaderClient.Disconnect(); err != nil {
+			logger.ErrorLogger.Printf("Error disconnecting from downloader service: %v", err)
+		}
+	}
+
+	// Close the Discord session
+	return c.Session.Close()
+}
+
+func (c *Client) DisableCommands() {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	c.CommandsEnabled = false
+}
+
+func (c *Client) IsCommandsEnabled() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.CommandsEnabled
 }
 
 func (c *Client) StartActivity() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	c.lastActivityTime = time.Now()
-}
-
-func (c *Client) QueueTrackWithoutStarting(guildID string, track *audio.Track) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, ok := c.songQueues[guildID]; !ok {
-		c.songQueues[guildID] = make([]*audio.Track, 0)
-	}
-
-	c.songQueues[guildID] = append(c.songQueues[guildID], track)
-
-	if c.dbManager != nil {
-		go func() {
-			err := c.dbManager.SaveQueue(guildID, c.songQueues[guildID])
-			if err != nil {
-				logger.ErrorLogger.Printf("Failed to save queue to database: %v", err)
-			}
-		}()
-	}
-}
-
-func (c *Client) GetCurrentVoiceConnection() (*discordgo.VoiceConnection, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
-	for _, vc := range c.voiceConnections {
-		if vc != nil {
-			return vc, true
-		}
-	}
-	
-	return nil, false
-}
-
-func (c *Client) JoinVoiceChannel(guildID, channelID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	c.lastActivityTime = time.Now()
-	
-	if vc, ok := c.voiceConnections[guildID]; ok {
-		if vc.ChannelID == channelID {
-			return nil
-		}
-		
-		// Stop any audio playing in the current voice channel
-		if player, exists := c.players[guildID]; exists && player != nil {
-			player.Stop()
-		}
-		
-		vc.Disconnect()
-	}
-	
-	vc, err := c.session.ChannelVoiceJoin(guildID, channelID, false, true)
-	if err != nil {
-		return fmt.Errorf("failed to join voice channel: %w", err)
-	}
-	
-	c.voiceConnections[guildID] = vc
-	c.playbackStatus[guildID] = "idle"
-	
-	return nil
-}
-
-
-func (c *Client) LeaveVoiceChannel(guildID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	vc, ok := c.voiceConnections[guildID]
-	if !ok || vc == nil {
-		return errors.New("not connected to a voice channel in this guild")
-	}
-	
-	if c.isInIdleMode {
-		c.radioStreamer.Stop()
-		c.isInIdleMode = false
-	}
-	
-	if player, exists := c.players[guildID]; exists {
-		player.Stop()
-		delete(c.players, guildID)
-	}
-	
-	if err := vc.Disconnect(); err != nil {
-		return fmt.Errorf("failed to disconnect from voice channel: %w", err)
-	}
-	
-	delete(c.voiceConnections, guildID)
-	delete(c.playbackStatus, guildID)
-	
-	return nil
-}
-
-func (c *Client) SetDefaultVoiceChannel(guildID, channelID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	c.defaultGuildID = guildID
-	c.defaultVCID = channelID
-	
-	logger.InfoLogger.Printf("Default voice channel set to %s in guild %s", channelID, guildID)
-}
-
-func (c *Client) SetRadioURL(url string) {
-	c.mu.Lock()
-	c.radioURL = url
-	c.mu.Unlock()
-	
-	c.radioStreamer.SetStream(url)
-	logger.InfoLogger.Printf("Radio URL set to %s", url)
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	c.LastActivityTime = time.Now()
 }
 
 func (c *Client) GetUserVoiceChannel(guildID, userID string) (string, error) {
-	vs, err := c.session.State.VoiceState(guildID, userID)
+	vs, err := c.Session.State.VoiceState(guildID, userID)
 	if err != nil || vs == nil || vs.ChannelID == "" {
 		return "", errors.New("user is not in a voice channel")
 	}
-	
+
 	return vs.ChannelID, nil
 }
 
+func (c *Client) JoinVoiceChannel(guildID, channelID string) error {
+	return c.VoiceManager.JoinChannel(guildID, channelID)
+}
+
+func (c *Client) LeaveVoiceChannel(guildID string) error {
+	return c.VoiceManager.LeaveChannel(guildID)
+}
+
+func (c *Client) SetDefaultVoiceChannel(guildID, channelID string) {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	c.DefaultGuildID = guildID
+	c.DefaultVCID = channelID
+
+	logger.InfoLogger.Printf("Default voice channel set to %s in guild %s", channelID, guildID)
+}
+
 func (c *Client) checkChannelEmpty(guildID, channelID string) bool {
-	guild, err := c.session.State.Guild(guildID)
+	guild, err := c.Session.State.Guild(guildID)
 	if err != nil {
 		logger.ErrorLogger.Printf("Error getting guild %s: %v", guildID, err)
 		return false
 	}
-	
-	botID := c.session.State.User.ID
+
+	botID := c.Session.State.User.ID
 	userCount := 0
-	
+
 	for _, vs := range guild.VoiceStates {
 		if vs.ChannelID == channelID {
 			if vs.UserID != botID {
@@ -381,89 +330,72 @@ func (c *Client) checkChannelEmpty(guildID, channelID string) bool {
 			}
 		}
 	}
-	
+
 	return userCount == 0
 }
 
 func (c *Client) startIdleMode() {
-    c.mu.Lock()
-    
-    if c.isInIdleMode {
-        logger.InfoLogger.Println("Idle mode is already active")
-        c.mu.Unlock()
-        return
-    }
-    
-    if c.defaultGuildID == "" || c.defaultVCID == "" {
-        logger.WarnLogger.Println("Cannot enter idle mode: default voice channel not configured")
-        c.mu.Unlock()
-        return
-    }
-    
-    if c.idleModeDisabled {
-        logger.InfoLogger.Println("Idle mode is currently disabled")
-        c.mu.Unlock()
-        return
-    }
-    
-    c.isInIdleMode = true
-    defaultGuildID := c.defaultGuildID
-    defaultVCID := c.defaultVCID
-    
-    alreadyConnected := false
-    if vc, ok := c.voiceConnections[defaultGuildID]; ok && vc != nil && vc.ChannelID == defaultVCID {
-        alreadyConnected = true
-    }
-    
-    c.mu.Unlock()
-    
-    logger.InfoLogger.Println("Entering idle mode")
-    
-    // Don't call StopAllPlayback() here, just ensure no player is active
-    c.mu.Lock()
-    for guildID, player := range c.players {
-        if player != nil {
-            logger.InfoLogger.Printf("Stopping player in guild %s before radio start", guildID)
-            player.Stop()
-        }
-    }
-    c.players = make(map[string]*audio.Player)
-    c.mu.Unlock()
-    
-    if !alreadyConnected {
-        err := c.JoinVoiceChannel(defaultGuildID, defaultVCID)
-        if err != nil {
-            logger.ErrorLogger.Printf("Failed to join default voice channel: %v", err)
-            
-            c.mu.Lock()
-            c.isInIdleMode = false
-            c.mu.Unlock()
-            return
-        }
-    } else {
-        logger.InfoLogger.Println("Already in the default voice channel, staying connected")
-    }
-    
-    go c.runJanitor()
-    
-    time.Sleep(250 * time.Millisecond)
-    
-    logger.InfoLogger.Println("Starting radio streamer...")
-    c.radioStreamer.Start()
-    
-    c.session.UpdateGameStatus(0, "Radio Mode | Use /help")
+	c.Mu.Lock()
+
+	if c.IsInIdleMode {
+		logger.InfoLogger.Println("Idle mode is already active")
+		c.Mu.Unlock()
+		return
+	}
+
+	if c.DefaultGuildID == "" || c.DefaultVCID == "" {
+		logger.WarnLogger.Println("Cannot enter idle mode: default voice channel not configured")
+		c.Mu.Unlock()
+		return
+	}
+
+	if c.IdleModeDisabled {
+		logger.InfoLogger.Println("Idle mode is currently disabled")
+		c.Mu.Unlock()
+		return
+	}
+
+	c.IsInIdleMode = true
+	defaultGuildID := c.DefaultGuildID
+	defaultVCID := c.DefaultVCID
+	c.Mu.Unlock()
+
+	logger.InfoLogger.Println("Entering idle mode")
+
+	// Stop all playback
+	c.VoiceManager.StopAllPlayback()
+
+	// Join the default voice channel
+	if c.VoiceManager.IsConnectedToChannel(defaultGuildID, defaultVCID) {
+		logger.InfoLogger.Println("Already in the default voice channel, staying connected")
+	} else {
+		err := c.JoinVoiceChannel(defaultGuildID, defaultVCID)
+		if err != nil {
+			logger.ErrorLogger.Printf("Failed to join default voice channel: %v", err)
+
+			c.Mu.Lock()
+			c.IsInIdleMode = false
+			c.Mu.Unlock()
+			return
+		}
+	}
+
+	// Start the radio
+	time.Sleep(250 * time.Millisecond)
+	c.RadioManager.Start()
+
+	c.Session.UpdateGameStatus(0, "Radio Mode | Use /help")
 }
 
-
 func (c *Client) startIdleChecker() {
-	c.idleCheckTicker = time.NewTicker(30 * time.Second)
-	
+	c.IdleCheckTicker = time.NewTicker(30 * time.Second)
+
 	go func() {
 		for {
 			select {
 			case <-c.stopChan:
 				return
-			case <-c.idleCheckTicker.C:
+			case <-c.IdleCheckTicker.C:
 				c.checkIdleState()
 			}
 		}
@@ -471,40 +403,41 @@ func (c *Client) startIdleChecker() {
 }
 
 func (c *Client) checkIdleState() {
-	c.mu.RLock()
-	lastActivity := c.lastActivityTime
-	isInIdleMode := c.isInIdleMode
-	idleTimeout := c.idleTimeout
-	idleModeDisabled := c.idleModeDisabled
-	defaultGuildID := c.defaultGuildID
-	defaultVCID := c.defaultVCID
-	c.mu.RUnlock()
-	
+	c.Mu.RLock()
+	lastActivity := c.LastActivityTime
+	isInIdleMode := c.IsInIdleMode
+	idleTimeout := c.IdleTimeout
+	idleModeDisabled := c.IdleModeDisabled
+	defaultGuildID := c.DefaultGuildID
+	defaultVCID := c.DefaultVCID
+	c.Mu.RUnlock()
+
 	if isInIdleMode {
 		return
 	}
-	
+
 	timeSinceActivity := time.Since(lastActivity)
-	
-	if vc, ok := c.GetCurrentVoiceConnection(); ok && vc != nil {
-		if c.checkChannelEmpty(vc.GuildID, vc.ChannelID) {
+
+	// Check if we're in a voice channel and it's empty
+	for guildID, channelID := range c.VoiceManager.GetConnectedChannels() {
+		if c.checkChannelEmpty(guildID, channelID) {
 			logger.InfoLogger.Println("Voice channel is empty, checking if we should enter idle mode")
-			
-			if vc.GuildID == defaultGuildID && vc.ChannelID == defaultVCID {
+
+			if guildID == defaultGuildID && channelID == defaultVCID {
 				logger.InfoLogger.Println("Already in the idle channel, enabling idle mode")
-				c.mu.Lock()
-				c.idleModeDisabled = false
-				c.mu.Unlock()
+				c.Mu.Lock()
+				c.IdleModeDisabled = false
+				c.Mu.Unlock()
 				c.startIdleMode()
 			} else if !idleModeDisabled {
 				logger.InfoLogger.Println("In non-idle channel that's empty, moving to idle channel")
-				
-				c.mu.Lock()
-				c.idleModeDisabled = false
-				c.mu.Unlock()
-				
-				vc.Disconnect()
-				
+
+				c.Mu.Lock()
+				c.IdleModeDisabled = false
+				c.Mu.Unlock()
+
+				c.LeaveVoiceChannel(guildID)
+
 				go func() {
 					time.Sleep(2 * time.Second)
 					c.startIdleMode()
@@ -513,7 +446,8 @@ func (c *Client) checkIdleState() {
 			return
 		}
 	}
-	
+
+	// Check if we've been idle for too long
 	if timeSinceActivity.Seconds() > float64(idleTimeout) && !idleModeDisabled {
 		logger.InfoLogger.Printf("Bot idle for %v seconds, entering radio mode", int(timeSinceActivity.Seconds()))
 		c.startIdleMode()
@@ -522,179 +456,212 @@ func (c *Client) checkIdleState() {
 }
 
 func (c *Client) EnableIdleMode() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	c.idleModeDisabled = false
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	c.IdleModeDisabled = false
 	logger.InfoLogger.Println("Idle mode enabled")
 }
 
 func (c *Client) DisableIdleMode() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	
-	c.idleModeDisabled = true
-	logger.InfoLogger.Println("Idle mode disabled")
-}
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
 
-func (c *Client) runJanitor() {
-	logger.InfoLogger.Println("Running janitor to clean up old files")
-	
-	janitorPath := "../janitor/janitor"
-	
-	if _, err := os.Stat(janitorPath); os.IsNotExist(err) {
-		logger.WarnLogger.Printf("Janitor binary not found at %s", janitorPath)
-		logger.WarnLogger.Println("To compile janitor: cd ../janitor && gcc janitor.c -o janitor -lsqlite3")
-		return
-	}
-	
-	cmd := exec.Command(janitorPath, "../shared/musicbot.db", "../shared")
-	
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		logger.ErrorLogger.Printf("Failed to run janitor: %v", err)
-		logger.ErrorLogger.Printf("Janitor output: %s", string(output))
-		return
-	}
-	
-	logger.InfoLogger.Printf("Janitor completed successfully: %s", string(output))
+	c.IdleModeDisabled = true
+	logger.InfoLogger.Println("Idle mode disabled")
 }
 
 func (c *Client) handleReady(s *discordgo.Session, r *discordgo.Ready) {
 	logger.InfoLogger.Printf("Logged in as: %s#%s", s.State.User.Username, s.State.User.Discriminator)
 	logger.InfoLogger.Printf("Bot is in %d servers", len(r.Guilds))
-	
+
 	s.UpdateGameStatus(0, "Radio Mode | Use /help")
 }
 
 func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
-	if v.UserID == s.State.User.ID && v.ChannelID == "" {
-		c.mu.Lock()
-		if _, ok := c.voiceConnections[v.GuildID]; ok {
-			delete(c.voiceConnections, v.GuildID)
-			delete(c.playbackStatus, v.GuildID)
+	if v.UserID == s.State.User.ID {
+		// The bot was disconnected from a voice channel
+		if v.ChannelID == "" {
 			logger.InfoLogger.Printf("Bot was disconnected from voice in guild %s", v.GuildID)
-			
-			if c.isInIdleMode {
-				c.isInIdleMode = false
-				c.radioStreamer.Stop()
+
+			c.Mu.Lock()
+			wasInIdleMode := c.IsInIdleMode
+			c.IsInIdleMode = false
+			c.IdleModeDisabled = false
+			c.Mu.Unlock()
+
+			if wasInIdleMode {
+				c.RadioManager.Stop()
 			}
-			
-			if player, exists := c.players[v.GuildID]; exists {
-				player.Stop()
-				delete(c.players, v.GuildID)
-			}
-		}
-		
-		wasDisabled := c.idleModeDisabled
-		c.idleModeDisabled = false
-		c.mu.Unlock()
-		
-		if wasDisabled {
-			logger.InfoLogger.Println("Bot was disconnected and idle mode was disabled, re-enabling idle mode")
-		}
-		
-		go func() {
-			time.Sleep(2 * time.Second)
-			c.startIdleMode()
-		}()
-		
-		return
-	}
-	
-	if v.UserID == s.State.User.ID && v.ChannelID != "" {
-		c.mu.Lock()
-		storedVC, exists := c.voiceConnections[v.GuildID]
-		
-		if exists && storedVC != nil && storedVC.ChannelID != v.ChannelID {
-			logger.InfoLogger.Printf("Bot was moved from channel %s to channel %s", 
-				storedVC.ChannelID, v.ChannelID)
-			
-			c.voiceConnections[v.GuildID] = nil
-			
-			isInIdleChannel := (v.ChannelID == c.defaultVCID && v.GuildID == c.defaultGuildID)
-			wasInIdleMode := c.isInIdleMode
-			
-			if isInIdleChannel {
-				c.isInIdleMode = true
-				c.idleModeDisabled = false
-				logger.InfoLogger.Println("Bot was moved to idle channel, enabling idle mode")
-			} else if wasInIdleMode {
-				c.isInIdleMode = false
-				c.idleModeDisabled = true
-				logger.InfoLogger.Println("Bot was moved out of idle channel, disabling idle mode")
-			}
-			
-			streamer := c.radioStreamer
-			c.mu.Unlock()
-			
-			if !wasInIdleMode && isInIdleChannel {
-				go streamer.Start()
-			} else if wasInIdleMode && !isInIdleChannel {
-				streamer.Stop()
-			}
-			
+
+			c.VoiceManager.HandleDisconnect(v.GuildID)
+
+			go func() {
+				time.Sleep(2 * time.Second)
+				c.startIdleMode()
+			}()
+
 			return
 		}
-		c.mu.Unlock()
+
+		// The bot was moved to a different channel
+		currentChannel := c.VoiceManager.GetConnectedChannel(v.GuildID)
+		if currentChannel != "" && currentChannel != v.ChannelID {
+			logger.InfoLogger.Printf("Bot was moved from channel %s to channel %s",
+				currentChannel, v.ChannelID)
+
+			c.Mu.Lock()
+			isInIdleChannel := (v.ChannelID == c.DefaultVCID && v.GuildID == c.DefaultGuildID)
+			wasInIdleMode := c.IsInIdleMode
+
+			if isInIdleChannel {
+				c.IsInIdleMode = true
+				c.IdleModeDisabled = false
+				logger.InfoLogger.Println("Bot was moved to idle channel, enabling idle mode")
+			} else if wasInIdleMode {
+				c.IsInIdleMode = false
+				c.IdleModeDisabled = true
+				logger.InfoLogger.Println("Bot was moved out of idle channel, disabling idle mode")
+			}
+			c.Mu.Unlock()
+
+			c.VoiceManager.HandleChannelMove(v.GuildID, v.ChannelID)
+
+			if !wasInIdleMode && isInIdleChannel {
+				go c.RadioManager.Start()
+			} else if wasInIdleMode && !isInIdleChannel {
+				c.RadioManager.Stop()
+			}
+
+			return
+		}
 	}
-	
+
+	// A user joined or left a voice channel
 	if v.UserID != s.State.User.ID {
-		c.mu.RLock()
-		var botsVC *discordgo.VoiceConnection
-		var botsGuildID string
-		
-		for guildID, vc := range c.voiceConnections {
-			if vc != nil {
-				botsVC = vc
-				botsGuildID = guildID
+		// Check if the bot is alone in a voice channel
+		for guildID, channelID := range c.VoiceManager.GetConnectedChannels() {
+			if c.checkChannelEmpty(guildID, channelID) {
+				logger.InfoLogger.Println("Bot is alone in voice channel, moving to idle channel")
+
+				c.Mu.Lock()
+				defaultGuildID := c.DefaultGuildID
+				defaultVCID := c.DefaultVCID
+				idleModeDisabled := c.IdleModeDisabled
+				c.Mu.Unlock()
+
+				if channelID != defaultVCID || guildID != defaultGuildID {
+					c.LeaveVoiceChannel(guildID)
+
+					c.Mu.Lock()
+					c.IdleModeDisabled = false
+					c.Mu.Unlock()
+
+					go func() {
+						time.Sleep(2 * time.Second)
+						c.startIdleMode()
+					}()
+				} else if idleModeDisabled {
+					c.Mu.Lock()
+					c.IdleModeDisabled = false
+					c.Mu.Unlock()
+
+					c.startIdleMode()
+				}
+
 				break
 			}
-		}
-		
-		defaultGuildID := c.defaultGuildID
-		defaultVCID := c.defaultVCID
-		idleModeDisabled := c.idleModeDisabled
-		c.mu.RUnlock()
-		
-		if botsVC != nil {
-			go func() {
-				time.Sleep(1 * time.Second)
-				
-				isEmpty := c.checkChannelEmpty(botsGuildID, botsVC.ChannelID)
-				
-				if isEmpty {
-					logger.InfoLogger.Println("Bot is alone in voice channel, moving to idle channel")
-					
-					if botsVC.ChannelID != defaultVCID || botsGuildID != defaultGuildID {
-						botsVC.Disconnect()
-						
-						c.mu.Lock()
-						c.idleModeDisabled = false
-						c.mu.Unlock()
-						
-						c.startIdleMode()
-					} else if idleModeDisabled {
-						c.mu.Lock()
-						c.idleModeDisabled = false
-						c.mu.Unlock()
-						
-						c.startIdleMode()
-					}
-				}
-			}()
 		}
 	}
 }
 
-func (c *Client) SetVolume(guildID string, volume float32) {
-	c.mu.Lock()
-	c.currentVolume = volume
-	c.mu.Unlock()
-	
-	if player, ok := c.players[guildID]; ok {
-		player.SetVolume(volume)
+func (c *Client) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	c.Router.HandleInteraction(s, i)
+}
+
+func (c *Client) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author.Bot {
+		return
 	}
-	
-	c.radioStreamer.SetVolume(volume)
+
+	c.StartActivity()
+}
+
+type ShutdownManager struct {
+	client *Client
+	wg     sync.WaitGroup
+}
+
+func NewShutdownManager(client *Client) *ShutdownManager {
+	return &ShutdownManager{
+		client: client,
+	}
+}
+
+func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
+	logger.InfoLogger.Println("Initiating graceful shutdown...")
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	sm.client.DisableCommands()
+
+	if sm.client.IdleCheckTicker != nil {
+		sm.client.IdleCheckTicker.Stop()
+	}
+
+	if sm.client.RadioManager != nil {
+		sm.client.RadioManager.Stop()
+	}
+
+	// Use waitgroup for synchronization
+	sm.wg.Add(1)
+	go func() {
+		defer sm.wg.Done()
+		sm.client.VoiceManager.StopAllPlayback()
+	}()
+
+	// Disconnect voice channels
+	sm.wg.Add(1)
+	go func() {
+		defer sm.wg.Done()
+		sm.client.VoiceManager.DisconnectAll()
+	}()
+
+	// Wait for cleanup with timeout
+	done := make(chan struct{})
+	go func() {
+		sm.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		logger.WarnLogger.Println("Shutdown timed out, forcing exit...")
+		break
+	case <-done:
+		logger.InfoLogger.Println("All components shut down successfully")
+	}
+
+	// Close DB and Discord session
+	if sm.client.DBManager != nil {
+		if err := sm.client.DBManager.Close(); err != nil {
+			logger.ErrorLogger.Printf("Error closing database: %v", err)
+		}
+	}
+
+	// Disconnect from downloader service
+	if sm.client.DownloaderClient != nil {
+		if err := sm.client.DownloaderClient.Disconnect(); err != nil {
+			logger.ErrorLogger.Printf("Error disconnecting from downloader: %v", err)
+		}
+	}
+
+	// Close Discord session
+	err := sm.client.Session.Close()
+	if err != nil {
+		logger.ErrorLogger.Printf("Error closing Discord session: %v", err)
+	}
+
+	return err
 }

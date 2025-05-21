@@ -11,6 +11,8 @@ import (
 
 	"quidque.com/discord-musican/internal/config"
 	"quidque.com/discord-musican/internal/discord"
+	"quidque.com/discord-musican/internal/discord/commands"
+	"quidque.com/discord-musican/internal/discord/components"
 	"quidque.com/discord-musican/internal/logger"
 )
 
@@ -19,40 +21,39 @@ func main() {
 	logLevel := flag.Int("logLevel", logger.LevelInfo, "Log level (0=Error, 1=Warning, 2=Info, 3=Debug)")
 	flag.Parse()
 
+	// Setup logger
 	logger.Setup(*logLevel)
 	logger.InfoLogger.Println("Discord Music Bot starting!")
 
+	// Load configuration
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	client, err := discord.NewClient(discord.ClientConfig{
-		Token:          cfg.DISCORD_TOKEN,
-		ClientID:       cfg.CLIENT_ID,
-		DefaultVolume:  cfg.VOLUME,
-		DefaultGuildID: cfg.DEFAULT_GUILD_ID,
-		DefaultVCID:    cfg.DEFAULT_VC_ID,
-		RadioURL:       cfg.RADIO_URL,
-		IdleTimeout:    cfg.IDLE_TIMEOUT,
-		UDSPath:        cfg.UDS_PATH,
-	})
+	// Create the Discord client
+	client, err := discord.NewClient(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
+	// Register commands
+	registerCommands(client)
+
+	// Register component handlers
+	registerComponentHandlers(client)
+
+	// Create shutdown manager
 	shutdownManager := discord.NewShutdownManager(client)
 
+	// Connect to Discord
 	logger.InfoLogger.Println("Connecting to Discord...")
 	if err := client.Connect(); err != nil {
 		log.Fatalf("Failed to connect client: %v", err)
 	}
 
-	// Initialize commands as enabled when the bot starts
-	client.CommandsEnabled = true
-	
 	logger.InfoLogger.Println("Bot is now running. Press CTRL-C to exit.")
-	
+
 	// Handle shutdown signals
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
@@ -69,4 +70,35 @@ func main() {
 		os.Exit(1)
 	}
 	logger.InfoLogger.Println("Shutdown complete.")
+}
+
+func registerCommands(client *discord.Client) {
+	// Register music commands
+	client.Router.RegisterCommand(commands.NewPlayCommand(client))
+	client.Router.RegisterCommand(commands.NewPlaylistCommand(client))
+	client.Router.RegisterCommand(commands.NewSearchCommand(client))
+	client.Router.RegisterCommand(commands.NewQueueCommand(client))
+	client.Router.RegisterCommand(commands.NewSkipCommand(client))
+	client.Router.RegisterCommand(commands.NewClearCommand(client))
+	client.Router.RegisterCommand(commands.NewNowPlayingCommand(client))
+	client.Router.RegisterCommand(commands.NewVolumeCommand(client))
+	client.Router.RegisterCommand(commands.NewRemoveCommand(client))
+	client.Router.RegisterCommand(commands.NewStartCommand(client))
+	client.Router.RegisterCommand(commands.NewPauseCommand(client))
+
+	// Register radio commands
+	client.Router.RegisterCommand(commands.NewSetDefaultVCCommand(client))
+	client.Router.RegisterCommand(commands.NewRadioURLCommand(client))
+	client.Router.RegisterCommand(commands.NewRadioVolumeCommand(client))
+	client.Router.RegisterCommand(commands.NewRadioStartCommand(client))
+	client.Router.RegisterCommand(commands.NewRadioStopCommand(client))
+
+	// Register utility commands
+	client.Router.RegisterCommand(commands.NewPingCommand(client))
+	client.Router.RegisterCommand(commands.NewHelpCommand(client))
+}
+
+func registerComponentHandlers(client *discord.Client) {
+	// Register search button handler
+	client.Router.RegisterComponentHandler(components.NewSearchButtonHandler(client))
 }

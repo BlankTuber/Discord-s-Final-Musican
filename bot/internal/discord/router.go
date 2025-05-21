@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -15,29 +16,72 @@ import (
 
 const CommandHashFile = "command_hashes.json"
 
-func (c *Client) setupCommandSystem() {
-	c.commands = NewCommandRegistry(c)
-	
-	c.registerAllCommands()
-	
-	c.session.AddHandler(c.handleInteraction)
-	c.session.AddHandler(c.handleMessageCreate)
+type CommandRouter struct {
+	client            *Client
+	commands          map[string]Command
+	componentHandlers map[string]ComponentHandler
+	mu                sync.RWMutex
 }
 
-func (c *Client) registerAllCommands() {
-	registerPingCommand(c.commands)
-	registerRadioCommands(c.commands)
-	registerMusicCommands(c.commands)
-	
-	logger.InfoLogger.Printf("Registered %d commands", len(c.commands.GetAllCommands()))
+type Command interface {
+	Name() string
+	Description() string
+	Options() []*discordgo.ApplicationCommandOption
+	Execute(s *discordgo.Session, i *discordgo.InteractionCreate)
 }
 
-func (c *Client) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type != discordgo.InteractionApplicationCommand {
-		return
+type ComponentHandler interface {
+	Prefix() string
+	Handle(s *discordgo.Session, i *discordgo.InteractionCreate)
+}
+
+func NewCommandRouter(client *Client) *CommandRouter {
+	return &CommandRouter{
+		client:            client,
+		commands:          make(map[string]Command),
+		componentHandlers: make(map[string]ComponentHandler),
 	}
+}
 
-	if !c.IsCommandsEnabled() {
+func (r *CommandRouter) RegisterCommand(cmd Command) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	name := cmd.Name()
+	r.commands[name] = cmd
+	logger.DebugLogger.Printf("Registered command: %s", name)
+}
+
+func (r *CommandRouter) RegisterComponentHandler(handler ComponentHandler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	prefix := handler.Prefix()
+	r.componentHandlers[prefix] = handler
+	logger.DebugLogger.Printf("Registered component handler: %s", prefix)
+}
+
+func (r *CommandRouter) GetCommand(name string) (Command, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	cmd, exists := r.commands[name]
+	return cmd, exists
+}
+
+func (r *CommandRouter) GetAllCommands() []Command {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	cmds := make([]Command, 0, len(r.commands))
+	for _, cmd := range r.commands {
+		cmds = append(cmds, cmd)
+	}
+	return cmds
+}
+
+func (r *CommandRouter) HandleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !r.client.IsCommandsEnabled() {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
@@ -48,21 +92,26 @@ func (c *Client) handleInteraction(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
-	if i.Type != discordgo.InteractionApplicationCommand {
-		return
+	switch i.Type {
+	case discordgo.InteractionApplicationCommand:
+		r.handleCommandInteraction(s, i)
+	case discordgo.InteractionMessageComponent:
+		r.handleComponentInteraction(s, i)
 	}
-	
+}
+
+func (r *CommandRouter) handleCommandInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	cmdName := i.ApplicationCommandData().Name
-	
+
 	userName := "unknown"
 	if i.Member != nil && i.Member.User != nil {
 		userName = i.Member.User.Username
 	}
 	logger.InfoLogger.Printf("Slash command '%s' executed by user %s", cmdName, userName)
-	
-	c.StartActivity()
-	
-	cmd, exists := c.commands.GetCommand(cmdName)
+
+	r.client.StartActivity()
+
+	cmd, exists := r.GetCommand(cmdName)
 	if !exists {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -73,69 +122,97 @@ func (c *Client) handleInteraction(s *discordgo.Session, i *discordgo.Interactio
 		logger.WarnLogger.Printf("Received unknown command: %s", cmdName)
 		return
 	}
-	
-	cmd.Execute(s, i, c)
+
+	cmd.Execute(s, i)
 }
 
-func (c *Client) handleMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author.Bot {
+func (r *CommandRouter) handleComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	r.client.StartActivity()
+
+	customID := i.MessageComponentData().CustomID
+
+	var handlerPrefix string
+	for idx, char := range customID {
+		if char == ':' {
+			handlerPrefix = customID[:idx]
+			break
+		}
+	}
+
+	if handlerPrefix == "" {
+		handlerPrefix = customID
+	}
+
+	r.mu.RLock()
+	handler, exists := r.componentHandlers[handlerPrefix]
+	r.mu.RUnlock()
+
+	if !exists {
+		logger.WarnLogger.Printf("No handler for component with prefix: %s", handlerPrefix)
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Unknown component interaction.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
 		return
 	}
-	
-	c.StartActivity()
+
+	handler.Handle(s, i)
 }
 
-func (c *Client) RefreshSlashCommands() error {
+func (r *CommandRouter) RefreshSlashCommands() error {
 	logger.InfoLogger.Println("Starting slash command refresh process...")
-	
-	registeredCommands := c.commands.GetAllCommands()
-	
+
+	registeredCommands := r.GetAllCommands()
+
 	currentCommands := make(map[string]string)
 	commandDefs := make([]*discordgo.ApplicationCommand, 0, len(registeredCommands))
-	
+
 	for _, cmd := range registeredCommands {
 		commandDef := &discordgo.ApplicationCommand{
 			Name:        cmd.Name(),
 			Description: cmd.Description(),
 			Options:     cmd.Options(),
 		}
-		
+
 		commandDefs = append(commandDefs, commandDef)
-		
+
 		hash, err := generateCommandHash(commandDef)
 		if err != nil {
 			logger.WarnLogger.Printf("Failed to generate hash for command %s: %v", cmd.Name(), err)
 			continue
 		}
-		
+
 		currentCommands[cmd.Name()] = hash
 	}
-	
+
 	previousCommands, err := loadCommandHashes()
 	if err != nil {
 		logger.WarnLogger.Printf("Failed to load previous command hashes: %v", err)
 		previousCommands = make(map[string]string)
 	}
-	
-	existingCommands, err := c.session.ApplicationCommands(c.clientID, "")
+
+	existingCommands, err := r.client.Session.ApplicationCommands(r.client.ClientID, "")
 	if err != nil {
 		logger.ErrorLogger.Printf("Failed to fetch existing commands: %v", err)
 		return fmt.Errorf("failed to fetch existing commands: %w", err)
 	}
-	
+
 	existingCommandIDs := make(map[string]string)
 	for _, cmd := range existingCommands {
 		existingCommandIDs[cmd.Name] = cmd.ID
 	}
-	
+
 	commandsToCreate := make([]*discordgo.ApplicationCommand, 0)
 	commandsToUpdate := make(map[string]*discordgo.ApplicationCommand)
 	commandsToKeep := make(map[string]bool)
-	
+
 	for _, commandDef := range commandDefs {
 		commandName := commandDef.Name
 		commandsToKeep[commandName] = true
-		
+
 		if existingID, exists := existingCommandIDs[commandName]; exists {
 			if prevHash, ok := previousCommands[commandName]; ok {
 				currentHash := currentCommands[commandName]
@@ -154,7 +231,7 @@ func (c *Client) RefreshSlashCommands() error {
 			commandsToCreate = append(commandsToCreate, commandDef)
 		}
 	}
-	
+
 	commandsToDelete := make([]string, 0)
 	for _, cmd := range existingCommands {
 		if !commandsToKeep[cmd.Name] {
@@ -162,42 +239,42 @@ func (c *Client) RefreshSlashCommands() error {
 			commandsToDelete = append(commandsToDelete, cmd.ID)
 		}
 	}
-	
+
 	logger.InfoLogger.Printf("Commands to create: %d, to update: %d, to delete: %d",
 		len(commandsToCreate), len(commandsToUpdate), len(commandsToDelete))
-	
+
 	for _, cmdID := range commandsToDelete {
 		logger.InfoLogger.Printf("Deleting command ID: %s", cmdID)
-		err := c.session.ApplicationCommandDelete(c.clientID, "", cmdID)
+		err := r.client.Session.ApplicationCommandDelete(r.client.ClientID, "", cmdID)
 		if err != nil {
 			logger.WarnLogger.Printf("Failed to delete command '%s': %v", cmdID, err)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	
+
 	for cmdID, cmdDef := range commandsToUpdate {
 		logger.InfoLogger.Printf("Updating command: %s", cmdDef.Name)
-		_, err := c.session.ApplicationCommandEdit(c.clientID, "", cmdID, cmdDef)
+		_, err := r.client.Session.ApplicationCommandEdit(r.client.ClientID, "", cmdID, cmdDef)
 		if err != nil {
 			logger.WarnLogger.Printf("Failed to update command '%s': %v", cmdDef.Name, err)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	
+
 	for _, cmdDef := range commandsToCreate {
 		logger.InfoLogger.Printf("Creating command: %s", cmdDef.Name)
-		_, err := c.session.ApplicationCommandCreate(c.clientID, "", cmdDef)
+		_, err := r.client.Session.ApplicationCommandCreate(r.client.ClientID, "", cmdDef)
 		if err != nil {
 			logger.WarnLogger.Printf("Failed to create command '%s': %v", cmdDef.Name, err)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	
+
 	err = saveCommandHashes(currentCommands)
 	if err != nil {
 		logger.WarnLogger.Printf("Failed to save command hashes: %v", err)
 	}
-	
+
 	logger.InfoLogger.Println("✓ Slash commands successfully refreshed")
 	return nil
 }
@@ -207,30 +284,30 @@ func generateCommandHash(command *discordgo.ApplicationCommand) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	
+
 	hash := md5.Sum(data)
 	return hex.EncodeToString(hash[:]), nil
 }
 
 func loadCommandHashes() (map[string]string, error) {
 	hashes := make(map[string]string)
-	
+
 	if _, err := os.Stat(CommandHashFile); os.IsNotExist(err) {
 		return hashes, nil
 	}
-	
+
 	data, err := os.ReadFile(CommandHashFile)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if len(data) > 0 {
 		err = json.Unmarshal(data, &hashes)
 		if err != nil {
 			return nil, err
 		}
 	}
-	
+
 	return hashes, nil
 }
 
@@ -241,11 +318,11 @@ func saveCommandHashes(hashes map[string]string) error {
 			return err
 		}
 	}
-	
+
 	data, err := json.MarshalIndent(hashes, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(CommandHashFile, data, 0644)
 }
