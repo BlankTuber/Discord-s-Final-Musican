@@ -123,7 +123,6 @@ func (c *HelpCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	response += "• `/pause` - Pause playback\n"
 	response += "• `/start` - Resume paused playback or restart queue\n"
 	response += "• `/clear` - Clear the queue\n"
-	response += "• `/remove <position>` - Remove a song from the queue\n"
 	response += "• `/volume <level>` - Set the volume (0.0 to 1.0)\n\n"
 
 	response += "**Radio Commands:**\n"

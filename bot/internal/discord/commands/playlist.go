@@ -184,14 +184,15 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 
 			// Download the track
 			track, err = c.client.DownloaderClient.DownloadPlaylistItem(url, idx, DefaultMaxDuration, DefaultMaxSize, false)
-			if err == nil && track != nil {
-				// Success, break out of retry loop
-				break
+			if err != nil {
+				// Log the error but continue with retries
+				logger.ErrorLogger.Printf("Attempt %d: Failed to download playlist item %d: %v",
+					attempt+1, idx+1, err)
+				continue
 			}
 
-			// Log the error but continue with retries
-			logger.ErrorLogger.Printf("Attempt %d: Failed to download playlist item %d: %v",
-				attempt+1, idx+1, err)
+			// Success, break out of retry loop
+			break
 		}
 
 		// Check if all attempts failed

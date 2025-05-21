@@ -377,65 +377,6 @@ func (c *VolumeCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 	})
 }
 
-// RemoveCommand handles the /remove command
-type RemoveCommand struct {
-	client *discord.Client
-}
-
-func NewRemoveCommand(client *discord.Client) *RemoveCommand {
-	return &RemoveCommand{
-		client: client,
-	}
-}
-
-func (c *RemoveCommand) Name() string {
-	return "remove"
-}
-
-func (c *RemoveCommand) Description() string {
-	return "Remove a song from the queue"
-}
-
-func (c *RemoveCommand) Options() []*discordgo.ApplicationCommandOption {
-	return []*discordgo.ApplicationCommandOption{
-		{
-			Type:        discordgo.ApplicationCommandOptionInteger,
-			Name:        "position",
-			Description: "Position of the song in the queue",
-			Required:    true,
-			MinValue:    floatPtr(1),
-		},
-	}
-}
-
-func (c *RemoveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-	})
-
-	options := i.ApplicationCommandData().Options
-	position := int(options[0].IntValue()) - 1
-
-	track, err := c.client.QueueManager.RemoveTrack(i.GuildID, position)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("❌ Error removing song: %s", err.Error())),
-		})
-		return
-	}
-
-	if track == nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("❌ No song at position %d in the queue", position+1)),
-		})
-		return
-	}
-
-	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(fmt.Sprintf("✅ Removed song: **%s** from the queue", track.Title)),
-	})
-}
-
 // StartCommand handles the /start command
 type StartCommand struct {
 	client *discord.Client

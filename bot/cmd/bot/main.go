@@ -82,7 +82,6 @@ func registerCommands(client *discord.Client) {
 	client.Router.RegisterCommand(commands.NewClearCommand(client))
 	client.Router.RegisterCommand(commands.NewNowPlayingCommand(client))
 	client.Router.RegisterCommand(commands.NewVolumeCommand(client))
-	client.Router.RegisterCommand(commands.NewRemoveCommand(client))
 	client.Router.RegisterCommand(commands.NewStartCommand(client))
 	client.Router.RegisterCommand(commands.NewPauseCommand(client))
 
