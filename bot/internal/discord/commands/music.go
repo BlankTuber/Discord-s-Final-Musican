@@ -199,6 +199,19 @@ func (c *SkipCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *SkipCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	isDj, _ := discord.CheckDJRole(s, i.GuildID, i.Member.User.ID)
+
+	if !isDj {
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "You need to be a DJ to skip songs.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
@@ -326,6 +339,10 @@ func (c *VolumeCommand) Options() []*discordgo.ApplicationCommandOption {
 			MaxValue:    1.0,
 		},
 	}
+}
+
+func (c *VolumeCommand) RequiredPermissions() int64 {
+	return discordgo.PermissionManageServer
 }
 
 func (c *VolumeCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {

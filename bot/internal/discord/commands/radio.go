@@ -37,6 +37,10 @@ func (c *SetDefaultVCCommand) Options() []*discordgo.ApplicationCommandOption {
 	}
 }
 
+func (c *SetDefaultVCCommand) RequiredPermissions() int64 {
+	return discordgo.PermissionManageServer
+}
+
 func (c *SetDefaultVCCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -89,6 +93,10 @@ func (c *RadioURLCommand) Options() []*discordgo.ApplicationCommandOption {
 	}
 }
 
+func (c *RadioURLCommand) RequiredPermissions() int64 {
+	return discordgo.PermissionManageServer
+}
+
 func (c *RadioURLCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -134,6 +142,10 @@ func (c *RadioVolumeCommand) Options() []*discordgo.ApplicationCommandOption {
 			MaxValue:    1.0,
 		},
 	}
+}
+
+func (c *RadioVolumeCommand) RequiredPermissions() int64 {
+	return discordgo.PermissionManageServer
 }
 
 func (c *RadioVolumeCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {

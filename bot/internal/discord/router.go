@@ -123,6 +123,37 @@ func (r *CommandRouter) handleCommandInteraction(s *discordgo.Session, i *discor
 		return
 	}
 
+	// Check permissions if the command implements PermissionedCommand
+	if permCmd, ok := cmd.(PermissionedCommand); ok {
+		requiredPerms := permCmd.RequiredPermissions()
+		if requiredPerms > 0 && i.Member != nil && i.Member.User != nil {
+			hasPermission, err := CheckPermissions(s, i.GuildID, i.ChannelID, i.Member.User.ID, requiredPerms)
+			if err != nil {
+				logger.ErrorLogger.Printf("Error checking permissions: %v", err)
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "An error occurred while checking permissions.",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
+			if !hasPermission {
+				logger.WarnLogger.Printf("User %s does not have required permissions for command %s", userName, cmdName)
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "You do not have permission to use this command.",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+		}
+	}
+
 	cmd.Execute(s, i)
 }
 

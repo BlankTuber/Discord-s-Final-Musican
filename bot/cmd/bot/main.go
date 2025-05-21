@@ -94,6 +94,12 @@ func registerCommands(client *discord.Client) {
 	// Register utility commands
 	client.Router.RegisterCommand(commands.NewPingCommand(client))
 	client.Router.RegisterCommand(commands.NewHelpCommand(client))
+
+	// Register moderation commands
+	client.Router.RegisterCommand(commands.NewClearCommand(client))
+	client.Router.RegisterCommand(commands.NewDisconnectUserCommand(client))
+	client.Router.RegisterCommand(commands.NewMuteUserCommand(client))
+	client.Router.RegisterCommand(commands.NewDeafenUserCommand(client))
 }
 
 func registerComponentHandlers(client *discord.Client) {
