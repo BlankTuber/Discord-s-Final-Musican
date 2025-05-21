@@ -20,12 +20,25 @@ type VoiceManager struct {
 }
 
 func NewVoiceManager(client *Client) *VoiceManager {
-	return &VoiceManager{
+	vm := &VoiceManager{
 		client:           client,
 		voiceConnections: make(map[string]*discordgo.VoiceConnection),
 		players:          make(map[string]*audio.Player),
 		playbackStatus:   make(map[string]audio.PlayerState),
 		currentVolume:    0.5,
+	}
+
+	// Register for player events
+	audio.RegisterPlayerEventHandler(vm.handlePlayerEvent)
+
+	return vm
+}
+
+func (vm *VoiceManager) handlePlayerEvent(event audio.PlayerEvent) {
+	logger.InfoLogger.Printf("Player event received: %s for guild %s", event.Type, event.GuildID)
+
+	if event.Type == "track_end" || event.Type == "track_skipped" {
+		go vm.handleTrackFinished(event.GuildID, event.Track)
 	}
 }
 
@@ -208,6 +221,8 @@ func (vm *VoiceManager) HandleChannelMove(guildID, newChannelID string) {
 }
 
 func (vm *VoiceManager) StartPlayingFromQueue(guildID string) {
+	logger.InfoLogger.Printf("StartPlayingFromQueue called for guild %s", guildID)
+
 	vm.mu.Lock()
 
 	// Make sure we have a voice connection
@@ -251,34 +266,19 @@ func (vm *VoiceManager) StartPlayingFromQueue(guildID string) {
 	vm.mu.Unlock()
 
 	// Start playback
-	go func() {
-		player.PlayTrack(track)
+	logger.InfoLogger.Printf("Playing track: %s", track.Title)
 
-		// Set track metadata
-		vm.client.Session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", track.Title))
+	player.PlayTrack(track)
 
-		// Increment play count
-		vm.client.QueueManager.IncrementPlayCount(track)
+	// Set track metadata
+	vm.client.Session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", track.Title))
 
-		// When track finishes, check if we should play the next one
-		vm.handleTrackFinished(guildID, track)
-	}()
+	// Increment play count
+	vm.client.QueueManager.IncrementPlayCount(track)
 }
 
 func (vm *VoiceManager) handleTrackFinished(guildID string, track *audio.Track) {
-	vm.mu.RLock()
-	player, hasPlayer := vm.players[guildID]
-	state := audio.StateStopped
-
-	if hasPlayer {
-		state = player.GetState()
-	}
-	vm.mu.RUnlock()
-
-	// Only continue if the player has stopped (not paused or reset)
-	if !hasPlayer || state != audio.StateStopped {
-		return
-	}
+	logger.InfoLogger.Printf("Track finished: %s in guild %s", track.Title, guildID)
 
 	// Mark the track as played in the database
 	vm.client.QueueManager.MarkTrackAsPlayed(guildID, track)
@@ -286,30 +286,19 @@ func (vm *VoiceManager) handleTrackFinished(guildID string, track *audio.Track) 
 	// Check if there are more tracks in the queue
 	nextTrack := vm.client.QueueManager.GetNextTrack(guildID)
 	if nextTrack != nil {
-		// Start playing the next track
-		vm.mu.Lock()
-		if player, ok := vm.players[guildID]; ok && player != nil {
-			volume := vm.currentVolume
-			vm.playbackStatus[guildID] = audio.StatePlaying
-			vm.mu.Unlock()
+		logger.InfoLogger.Printf("Next track: %s", nextTrack.Title)
 
-			// Use a non-recursive approach to avoid stack overflow
-			go func() {
-				player.SetVolume(volume)
-				player.PlayTrack(nextTrack)
+		vm.mu.RLock()
+		_, isConnected := vm.voiceConnections[guildID]
+		vm.mu.RUnlock()
 
-				// Set track metadata
-				vm.client.Session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", nextTrack.Title))
-
-				// Increment play count
-				vm.client.QueueManager.IncrementPlayCount(nextTrack)
-			}()
-
-			// Instead of calling handleTrackFinished recursively,
-			// let the player's event system trigger the next track
-		} else {
-			vm.mu.Unlock()
+		if !isConnected {
+			logger.InfoLogger.Printf("Voice connection lost, cannot play next track")
+			return
 		}
+
+		// Play the next track
+		vm.StartPlayingFromQueue(guildID)
 	} else {
 		// Queue is empty, update status
 		vm.client.Session.UpdateGameStatus(0, "Queue is empty | Use /play")

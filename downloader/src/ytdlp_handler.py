@@ -229,7 +229,7 @@ def get_playlist_info(url, max_items=None):
             'quiet': True, 
             'noplaylist': False,
             'extract_flat': True,
-            'socket_timeout': 30,
+            'socket_timeout': 60,  # Increased timeout for playlist info
             'ignoreerrors': True
         }) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -306,8 +306,11 @@ def download_playlist_item(url, index, max_duration_seconds=None, max_size_mb=No
             'extract_flat': True,
             'playliststart': index + 1,  # 1-based index
             'playlistend': index + 1,
-            'socket_timeout': 30,
-            'ignoreerrors': True
+            'socket_timeout': 90,  # Increased timeout for playlist item extraction
+            'ignoreerrors': True,
+            'retries': 5,          # Increased retries
+            'fragment_retries': 5, # Increased fragment retries
+            'extractor_retries': 5 # Increased extractor retries
         }) as ydl:
             info = ydl.extract_info(url, download=False)
             
@@ -327,6 +330,9 @@ def download_playlist_item(url, index, max_duration_seconds=None, max_size_mb=No
             video_title = entry.get('title', f'Unknown Track {index}')
             video_url = entry.get('url', f"https://www.youtube.com/watch?v={video_id}")
             
+            if not video_url.startswith("http"):
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+            
             # Now download the individual video
             logger.logger.info(f"Downloading playlist item: {video_title} ({video_url})")
             
@@ -344,6 +350,11 @@ def download_playlist_item(url, index, max_duration_seconds=None, max_size_mb=No
             if not result:
                 logger.logger.error(f"Download failed for playlist item after {elapsed:.2f} seconds")
                 return {"status": "error", "message": f"Download failed for item {index}"}
+            
+            # Check if the result contains an error
+            if isinstance(result, dict) and result.get('status') == 'error':
+                logger.logger.error(f"Download failed for playlist item {index}: {result.get('message', 'Unknown error')}")
+                return result
             
             logger.logger.info(f"Playlist item download completed in {elapsed:.2f} seconds")
             logger.logger.info(f"Downloaded: {result.get('title', 'Unknown')}")
@@ -375,6 +386,38 @@ def download_playlist_item(url, index, max_duration_seconds=None, max_size_mb=No
                 "id": result.get('id'),
                 "index": index
             }
+    except yt_dlp.utils.DownloadError as e:
+        elapsed = time.time() - start_time
+        error_msg = str(e).lower()
+        
+        # Provide detailed error message based on the type of error
+        if "private" in error_msg:
+            logger.logger.error(f"Download error: This video is private")
+            return {"status": "error", "message": "This video is private"}
+        elif any(term in error_msg for term in ["premium", "paywall", "subscribe", "login", "member", "paid"]):
+            logger.logger.error(f"Download error: This content requires a premium account or login")
+            return {"status": "error", "message": "This content requires a premium account or login"}
+        elif any(term in error_msg for term in ["removed", "deleted", "taken down"]):
+            logger.logger.error(f"Download error: This video has been removed or deleted")
+            return {"status": "error", "message": "This video has been removed or deleted"}
+        elif "unavailable" in error_msg:
+            logger.logger.error(f"Download error: This video is unavailable")
+            return {"status": "error", "message": "This video is unavailable"}
+        elif "copyright" in error_msg:
+            logger.logger.error(f"Download error: This video is blocked due to copyright issues")
+            return {"status": "error", "message": "This video is blocked due to copyright issues"}
+        elif "age" in error_msg and ("restrict" in error_msg or "verify" in error_msg):
+            logger.logger.error(f"Download error: This video is age-restricted")
+            return {"status": "error", "message": "This video is age-restricted"}
+        elif ("geo" in error_msg and "block" in error_msg) or "country" in error_msg:
+            logger.logger.error(f"Download error: This video is not available in your country")
+            return {"status": "error", "message": "This video is not available in your country"}
+        elif "not exist" in error_msg or "no longer" in error_msg or "not found" in error_msg:
+            logger.logger.error(f"Download error: This video does not exist or could not be found")
+            return {"status": "error", "message": "This video does not exist or could not be found"}
+        else:
+            logger.logger.error(f"Download error after {elapsed:.2f} seconds: {e}")
+            return {"status": "error", "message": str(e)}
     except Exception as e:
         elapsed = time.time() - start_time
         logger.logger.error(f"Error in download_playlist_item after {elapsed:.2f} seconds: {e}")

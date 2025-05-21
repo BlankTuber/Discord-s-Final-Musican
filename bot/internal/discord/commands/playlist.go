@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"quidque.com/discord-musican/internal/audio"
 	"quidque.com/discord-musican/internal/discord"
 	"quidque.com/discord-musican/internal/logger"
 )
@@ -17,6 +18,7 @@ const (
 	DefaultPlaylistMaxOpt = 20
 	DefaultMaxDuration    = 600
 	DefaultMaxSize        = 50
+	MaxRetryAttempts      = 3
 )
 
 type PlaylistCommand struct {
@@ -168,28 +170,57 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	// Process each track individually
 	failedTracks := make([]string, 0)
 
-	for idx := 0; idx < totalTracks; idx++ { // Changed 'i' to 'idx'
-		// Download the track
-		track, err := c.client.DownloaderClient.DownloadPlaylistItem(url, idx, DefaultMaxDuration, DefaultMaxSize, false)
-		if err != nil || track == nil || track.FilePath == "" || !fileExists(track.FilePath) {
+	for idx := 0; idx < totalTracks; idx++ {
+		var track interface{} = nil
+		var err error
+
+		// Try up to MaxRetryAttempts times
+		for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
+			// Add a small delay between retries to prevent rate limiting
+			if attempt > 0 {
+				time.Sleep(time.Duration(attempt) * time.Second)
+				logger.InfoLogger.Printf("Retry attempt %d for track %d", attempt+1, idx+1)
+			}
+
+			// Download the track
+			track, err = c.client.DownloaderClient.DownloadPlaylistItem(url, idx, DefaultMaxDuration, DefaultMaxSize, false)
+			if err == nil && track != nil {
+				// Success, break out of retry loop
+				break
+			}
+
+			// Log the error but continue with retries
+			logger.ErrorLogger.Printf("Attempt %d: Failed to download playlist item %d: %v",
+				attempt+1, idx+1, err)
+		}
+
+		// Check if all attempts failed
+		if err != nil || track == nil {
 			mu.Lock()
 			failCount++
-			if track != nil && track.Title != "" {
-				failedTracks = append(failedTracks, track.Title)
-			} else {
-				failedTracks = append(failedTracks, fmt.Sprintf("Track #%d", idx+1))
-			}
+			failedTracks = append(failedTracks, fmt.Sprintf("Track #%d", idx+1))
 			mu.Unlock()
-			logger.ErrorLogger.Printf("Failed to download playlist item %d: %v", idx, err)
+			logger.ErrorLogger.Printf("All attempts failed for track %d: %v", idx+1, err)
+			continue
+		}
+
+		// Convert the interface to the correct type
+		audioTrack, ok := track.(*audio.Track)
+		if !ok || audioTrack.FilePath == "" || !fileExists(audioTrack.FilePath) {
+			mu.Lock()
+			failCount++
+			failedTracks = append(failedTracks, fmt.Sprintf("Track #%d", idx+1))
+			mu.Unlock()
+			logger.ErrorLogger.Printf("Invalid track data for item %d", idx+1)
 			continue
 		}
 
 		// Set track metadata
-		track.Requester = i.Member.User.Username
-		track.RequestedAt = time.Now().Unix()
+		audioTrack.Requester = i.Member.User.Username
+		audioTrack.RequestedAt = time.Now().Unix()
 
-		// Add to queue
-		c.client.QueueManager.AddTrack(c.client.DefaultGuildID, track)
+		// Add to queue - make sure to use the correct guild ID
+		c.client.QueueManager.AddTrack(i.GuildID, audioTrack)
 
 		mu.Lock()
 		successCount++

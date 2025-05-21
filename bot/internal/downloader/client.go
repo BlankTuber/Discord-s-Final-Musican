@@ -391,37 +391,42 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 
 	response, err := c.SendRequest("download_audio", params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("communication error: %w", err)
 	}
 
 	if response.Error != "" {
-		return nil, errors.New(response.Error)
+		return nil, fmt.Errorf("download error: %s", response.Error)
 	}
 
-	// Check if response contains an error or status message
+	// Enhanced error handling for status errors
 	if status, ok := response.Data["status"].(string); ok && status == "error" {
-		errorMsg := "Download failed"
+		// Get the detailed error message
+		var errorMsg string
 		if msg, ok := response.Data["message"].(string); ok && msg != "" {
 			errorMsg = msg
+		} else {
+			errorMsg = "Unknown download error"
 		}
-		return nil, errors.New(errorMsg)
+
+		logger.InfoLogger.Printf("Received error from downloader: %s", errorMsg)
+		return nil, fmt.Errorf("%s", errorMsg)
 	}
 
 	// Check if we got a valid title and filename
 	title, titleOk := response.Data["title"].(string)
 	filename, filenameOk := response.Data["filename"].(string)
 
-	if !titleOk || title == "" || !filenameOk || filename == "" {
-		// Check if we can get a more specific error message
-		if skipped, ok := response.Data["skipped"].(bool); ok && skipped {
-			return nil, errors.New("download was skipped, possibly due to size or duration limits")
-		}
-		return nil, errors.New("download failed - received invalid track data")
+	if !titleOk || title == "" {
+		return nil, fmt.Errorf("download failed: received invalid or missing title")
+	}
+
+	if !filenameOk || filename == "" {
+		return nil, fmt.Errorf("download failed: received invalid or missing file path")
 	}
 
 	// File existence check
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		return nil, errors.New("download completed but file is missing")
+		return nil, fmt.Errorf("download failed: file '%s' is missing", filename)
 	}
 
 	track := &audio.Track{
@@ -572,11 +577,25 @@ func (c *Client) DownloadPlaylistItem(url string, index int, maxDuration int, ma
 
 	response, err := c.SendRequest("download_playlist_item", params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("communication error: %w", err)
 	}
 
 	if response.Error != "" {
-		return nil, errors.New(response.Error)
+		return nil, fmt.Errorf("download error: %s", response.Error)
+	}
+
+	// Enhanced error handling for status errors
+	if status, ok := response.Data["status"].(string); ok && status == "error" {
+		// Get the detailed error message
+		var errorMsg string
+		if msg, ok := response.Data["message"].(string); ok && msg != "" {
+			errorMsg = msg
+		} else {
+			errorMsg = "Unknown download error"
+		}
+
+		logger.InfoLogger.Printf("Received error from downloader: %s", errorMsg)
+		return nil, fmt.Errorf("%s", errorMsg)
 	}
 
 	track := &audio.Track{
@@ -586,14 +605,21 @@ func (c *Client) DownloadPlaylistItem(url string, index int, maxDuration int, ma
 		DownloadStatus: "completed",
 	}
 
-	if title, ok := response.Data["title"].(string); ok {
+	if title, ok := response.Data["title"].(string); ok && title != "" {
 		track.Title = title
 	} else {
-		track.Title = fmt.Sprintf("Unknown Track %d", index+1)
+		return nil, fmt.Errorf("download failed: received invalid or missing title")
 	}
 
-	if filePath, ok := response.Data["filename"].(string); ok {
+	if filePath, ok := response.Data["filename"].(string); ok && filePath != "" {
 		track.FilePath = filePath
+	} else {
+		return nil, fmt.Errorf("download failed: received invalid or missing file path")
+	}
+
+	// File existence check
+	if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("download failed: file '%s' is missing", track.FilePath)
 	}
 
 	if duration, ok := response.Data["duration"].(float64); ok {
