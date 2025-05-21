@@ -98,6 +98,92 @@ func (rm *RadioManager) SetVolume(volume float32) {
 	}
 }
 
+// StartInChannel starts radio in a specific channel
+func (rm *RadioManager) StartInChannel(guildID, channelID string) {
+	rm.mu.Lock()
+	if rm.isPaused {
+		rm.isPaused = false
+		rm.mu.Unlock()
+		logger.InfoLogger.Println("Radio streamer resumed from paused state")
+		return
+	}
+
+	if rm.isActive {
+		rm.mu.Unlock()
+		logger.InfoLogger.Println("Radio streamer already active, ignoring start request")
+		return
+	}
+
+	rm.isActive = true
+	streamURL := rm.streamURL
+	volume := rm.volume
+	rm.mu.Unlock()
+
+	logger.InfoLogger.Printf("Starting radio streamer in channel %s with URL: %s and volume: %.2f",
+		channelID, streamURL, volume)
+
+	rm.client.VoiceManager.StopAllPlayback()
+
+	go rm.streamInChannel(guildID, channelID)
+}
+
+// streamInChannel streams audio to a specific channel
+func (rm *RadioManager) streamInChannel(guildID, channelID string) {
+	for {
+		rm.mu.RLock()
+		active := rm.isActive
+		rm.mu.RUnlock()
+
+		if !active {
+			logger.InfoLogger.Println("Radio stream loop ending: not active")
+			return
+		}
+
+		// Make sure we're connected to the specified channel
+		if !rm.client.VoiceManager.IsConnectedToChannel(guildID, channelID) {
+			err := rm.client.RobustJoinVoiceChannel(guildID, channelID)
+			if err != nil {
+				logger.ErrorLogger.Printf("Failed to join voice channel %s for radio: %v", channelID, err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+		}
+
+		// Get the voice connection
+		rm.client.VoiceManager.mu.RLock()
+		vc, exists := rm.client.VoiceManager.voiceConnections[guildID]
+		rm.client.VoiceManager.mu.RUnlock()
+
+		if !exists || vc == nil {
+			logger.ErrorLogger.Printf("Cannot start radio stream: not connected to voice channel")
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		rm.mu.RLock()
+		streamURL := rm.streamURL
+		rm.mu.RUnlock()
+
+		logger.InfoLogger.Printf("Starting radio stream from URL: %s", streamURL)
+		err := rm.streamAudio(vc)
+
+		rm.mu.RLock()
+		active = rm.isActive
+		rm.mu.RUnlock()
+
+		if !active {
+			logger.InfoLogger.Println("Radio stream loop ending: no longer active after stream attempt")
+			return
+		}
+
+		if err != nil {
+			logger.ErrorLogger.Printf("Radio stream error: %v", err)
+			logger.InfoLogger.Println("Will retry radio stream in 5 seconds...")
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
 func (rm *RadioManager) streamLoop() {
 	for {
 		rm.mu.RLock()

@@ -204,14 +204,8 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 	isInIdleVC := (channelID == c.client.DefaultVCID && i.GuildID == c.client.DefaultGuildID)
 	c.client.Mu.RUnlock()
 
-	// Only set default VC if we're in the idle VC
-	if isInIdleVC {
-		// Enable idle mode when radio is started in the default channel
-		c.client.EnableIdleMode()
-	} else {
-		// When starting radio in a non-default channel, disable idle mode
-		c.client.DisableIdleMode()
-	}
+	// Always disable idle mode when manually starting radio
+	c.client.DisableIdleMode()
 
 	// Stop any currently playing audio
 	c.client.VoiceManager.StopAllPlayback()
@@ -227,21 +221,23 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		}
 	}
 
+	// Set idle mode flag based on the channel
 	c.client.Mu.Lock()
 	c.client.IsInIdleMode = isInIdleVC
 	c.client.Mu.Unlock()
 
-	c.client.RadioManager.Start()
+	// Start radio in the current channel instead of using the default radio.Start()
+	c.client.RadioManager.StartInChannel(i.GuildID, channelID)
 
 	s.UpdateGameStatus(0, "Radio Mode | Use /help")
 
 	if isInIdleVC {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("✅ Idle radio mode started in default channel!"),
+			Content: stringPtr("✅ Radio started in idle channel!"),
 		})
 	} else {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("✅ Radio started in current channel! (Not in idle mode)"),
+			Content: stringPtr("✅ Radio started in current channel!"),
 		})
 	}
 }
