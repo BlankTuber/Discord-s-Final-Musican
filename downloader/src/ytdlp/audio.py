@@ -7,10 +7,10 @@ def match_filter_func(info, max_duration_seconds=None, max_size_mb=None, allow_l
     if not allow_live and info.get('duration') is None:
         return "Video is a live stream (duration is None)"
         
-    if max_duration_seconds and info.get('duration', 0) > max_duration_seconds:
+    if max_duration_seconds is not None and info.get('duration', 0) > max_duration_seconds:
         return f"The video is too long ({info['duration']} seconds > {max_duration_seconds} seconds)"
     
-    if max_size_mb:
+    if max_size_mb is not None:
         max_bytes = max_size_mb * 1024 * 1024
         if info.get('filesize_approx', 0) > max_bytes:
             return f"The file is too large ({info['filesize_approx'] / (1024*1024):.1f}MB > {max_size_mb}MB)"
@@ -27,7 +27,6 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
     platform_prefix = utils.get_platform_prefix(platform)
     
     try:
-        # First check if the song exists in the database and the file exists
         song = db.get_song_by_url(url)
         if song and os.path.exists(song['file_path']):
             print(f"Song already exists in database and file exists: {song['title']}")
@@ -44,7 +43,6 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 'skipped': True
             }
             
-        # Check basic info about the URL without downloading
         with yt_dlp.YoutubeDL({
             'skip_download': True, 
             'quiet': True,
@@ -59,26 +57,22 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
             if not allow_live and info.get('duration') is None:
                 error_msg = "Content is a live stream (duration is None)"
                 print(f"Skipping: {error_msg}")
-                # Return error information instead of None
                 return {'status': 'error', 'message': error_msg}
                 
-            if max_duration_seconds and info.get('duration', 0) > max_duration_seconds:
+            if max_duration_seconds is not None and info.get('duration', 0) > max_duration_seconds:
                 error_msg = f"Duration ({info.get('duration')}s) exceeds limit ({max_duration_seconds}s)"
                 print(f"Skipping: {error_msg}")
-                # Return error information instead of None
                 return {'status': 'error', 'message': error_msg}
                 
-            if max_size_mb and info.get('filesize_approx', 0) > max_size_mb * 1024 * 1024:
+            if max_size_mb is not None and info.get('filesize_approx', 0) > max_size_mb * 1024 * 1024:
                 error_msg = f"Estimated size ({info.get('filesize_approx') / (1024*1024):.1f}MB) exceeds limit ({max_size_mb}MB)"
                 print(f"Skipping: {error_msg}")
-                # Return error information instead of None
                 return {'status': 'error', 'message': error_msg}
             
             filename = f"{platform_prefix}_{info['id']}.mp3"
             full_path = os.path.abspath(os.path.join(download_path, filename))
             
             if os.path.isfile(full_path):
-                # If the file exists but is not in the database, we'll add it later
                 print(f"File exists but not in database: {full_path}")
                 file_exists = True
                 file_size = os.path.getsize(full_path)
@@ -86,18 +80,14 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 file_exists = False
                 file_size = None
         
-        # Check song count to warn if we're approaching limit, but don't delete anything
-        # Only janitor should delete files and DB entries
         song_count = db.get_song_count()
         if song_count >= 500:
             print(f"Warning: Database contains {song_count} songs, which is at or above the limit of 500.")
             print("The janitor will clean up old songs on its next run.")
         
-        # If the file already exists, skip the download
         if file_exists:
             print(f"File already exists, skipping download: {full_path}")
         else:
-            # File doesn't exist, proceed with download
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'postprocessors': [{
@@ -115,7 +105,7 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 'extractor_retries': 3
             }
             
-            if max_duration_seconds or max_size_mb:
+            if max_duration_seconds is not None or max_size_mb is not None:
                 ydl_opts['match_filter'] = lambda info: utils.match_filter_func(
                     info, max_duration_seconds, max_size_mb, allow_live
                 )
@@ -132,7 +122,6 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                     filename = f"{platform_prefix}_{info['id']}.mp3"
                     full_path = os.path.join(download_path, filename)
                     
-                    # Verify the download was successful
                     file_exists = os.path.exists(full_path)
                     if not file_exists:
                         error_msg = "Download completed but file not found"
@@ -141,14 +130,11 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                     
                     file_size = os.path.getsize(full_path)
             except yt_dlp.utils.DownloadError as e:
-                # This will catch filter match errors too
                 error_msg = str(e)
                 print(f"Download error: {error_msg}")
                 return {'status': 'error', 'message': error_msg}
         
-        # Only interact with the database after confirming the download was successful
         if file_exists:
-            # Get full info for the song to add to database
             with yt_dlp.YoutubeDL({
                 'skip_download': True, 
                 'quiet': True
@@ -165,13 +151,11 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
             
             artist = info.get('artist', info.get('uploader', info.get('channel', 'Unknown')))
             
-            # Check if the song already exists in the database
             existing_song = db.get_song_by_url(url)
             if existing_song:
                 print(f"Song already exists in database: {existing_song['title']}")
                 song_id = existing_song['id']
             else:
-                # Now add to database
                 song_id = db.add_song(
                     title=info.get('title', 'Unknown'),
                     url=url,
@@ -185,7 +169,6 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 )
                 print(f"Added song to database with ID: {song_id}")
             
-            # Wait a moment to ensure database operations complete
             time.sleep(0.2)
             
             return {
