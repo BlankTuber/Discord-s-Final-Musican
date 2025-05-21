@@ -221,9 +221,6 @@ func (p *Player) playTrackInternal(track *Track) {
 		if paused {
 			// If we're paused, store current track and position
 			p.mu.Lock()
-			p.pausedTrack = track
-			// In a real implementation, we'd track the position more precisely
-			p.pausedOffset, _ = p.stream.Seek(0, io.SeekCurrent)
 			p.state = StatePaused
 			p.mu.Unlock()
 
@@ -237,7 +234,7 @@ func (p *Player) playTrackInternal(track *Track) {
 			}
 
 			logger.InfoLogger.Printf("Track paused: %s", track.Title)
-			return
+			return // IMPORTANT: Just return without firing track_end event
 		}
 
 		if skipped {
@@ -362,6 +359,9 @@ func (p *Player) Pause() {
 	}
 
 	p.pauseFlag = true
+	// Store current track for resuming later
+	p.pausedTrack = p.currentTrack
+	p.state = StatePaused
 	p.mu.Unlock()
 
 	select {
@@ -371,6 +371,9 @@ func (p *Player) Pause() {
 		p.stopChan = make(chan bool, 1)
 		p.stopChan <- true
 	}
+
+	// Don't trigger track_end event - we're pausing, not ending
+	logger.InfoLogger.Printf("Track paused: %s", p.pausedTrack.Title)
 }
 
 func (p *Player) Resume() {

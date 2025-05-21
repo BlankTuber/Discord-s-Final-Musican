@@ -218,7 +218,7 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 
 	// Check if already connected to the right channel
 	if !c.client.VoiceManager.IsConnectedToChannel(i.GuildID, channelID) {
-		err = c.client.JoinVoiceChannel(i.GuildID, channelID)
+		err = c.client.RobustJoinVoiceChannel(i.GuildID, channelID)
 		if err != nil {
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 				Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),

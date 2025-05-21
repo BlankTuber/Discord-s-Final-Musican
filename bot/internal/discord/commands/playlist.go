@@ -71,6 +71,7 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		maxItems = int(options[1].IntValue())
 	}
 
+	// Verify user is in a voice channel first (but don't join yet)
 	channelID, err := c.client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -79,15 +80,8 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 
+	// Disable idle mode completely before downloading
 	c.client.DisableIdleMode()
-
-	err = c.client.JoinVoiceChannel(i.GuildID, channelID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
-		})
-		return
-	}
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr("⏳ Processing playlist... This may take a while."),
@@ -105,6 +99,15 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		if singleErr == nil && track != nil && track.FilePath != "" {
 			track.Requester = i.Member.User.Username
 			track.RequestedAt = time.Now().Unix()
+
+			// Now that we have downloaded successfully, join the voice channel
+			err = c.client.RobustJoinVoiceChannel(i.GuildID, channelID)
+			if err != nil {
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+					Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
+				})
+				return
+			}
 
 			c.client.QueueManager.AddTrack(i.GuildID, track)
 
@@ -136,6 +139,8 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	var successCount int
 	var failCount int
 	var mu sync.Mutex
+	var firstTrackAdded bool = false
+	var playbackStarted bool = false
 
 	// Start a goroutine to update the message periodically
 	stopUpdates := make(chan struct{})
@@ -156,6 +161,11 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 				if current+failed > 0 {
 					progress := fmt.Sprintf("⏳ Downloading **%s**\nProgress: %d/%d tracks downloaded (%d failed)",
 						playlistTitle, current, totalTracks, failed)
+
+					// Add note that playback has started if applicable
+					if playbackStarted {
+						progress += "\n\n▶️ Playback has started with the first track while downloading continues."
+					}
 
 					s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 						Content: stringPtr(progress),
@@ -220,17 +230,46 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		audioTrack.Requester = i.Member.User.Username
 		audioTrack.RequestedAt = time.Now().Unix()
 
-		// Add to queue - make sure to use the correct guild ID
-		c.client.QueueManager.AddTrack(i.GuildID, audioTrack)
-
 		mu.Lock()
+		firstTrack := !firstTrackAdded
+		firstTrackAdded = true
 		successCount++
 		mu.Unlock()
 
-		// If this is the first successful track, notify about playback starting
-		if successCount == 1 {
-			c.client.StartPlayback(i.GuildID)
+		// If this is the first successful track, join voice channel and start playback
+		if firstTrack {
+			// Double-check user is still in the voice channel
+			newChannelID, vcErr := c.client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
+			if vcErr == nil {
+				channelID = newChannelID // Update channel ID if user moved
+			}
+
+			// Force disable idle mode again before joining VC
+			c.client.DisableIdleMode()
+
+			// Join VC for the first track
+			err = c.client.RobustJoinVoiceChannel(i.GuildID, channelID)
+			if err != nil {
+				logger.ErrorLogger.Printf("Failed to join voice channel for playlist: %v", err)
+				// Don't return - we'll still add tracks to queue
+			} else {
+				// Everything is set up - add the track and flag that we've started playback
+				c.client.QueueManager.AddTrack(i.GuildID, audioTrack)
+
+				mu.Lock()
+				playbackStarted = true
+				mu.Unlock()
+
+				logger.InfoLogger.Printf("Started playback with first track: %s", audioTrack.Title)
+
+				// Update status to show we're playing music not radio
+				c.client.Session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", audioTrack.Title))
+				continue // Skip the AddTrack below since we already added it
+			}
 		}
+
+		// Add subsequent tracks directly to queue
+		c.client.QueueManager.AddTrack(i.GuildID, audioTrack)
 	}
 
 	// Send final message

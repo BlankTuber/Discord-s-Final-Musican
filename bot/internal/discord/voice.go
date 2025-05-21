@@ -11,21 +11,23 @@ import (
 )
 
 type VoiceManager struct {
-	client           *Client
-	voiceConnections map[string]*discordgo.VoiceConnection
-	players          map[string]*audio.Player
-	playbackStatus   map[string]audio.PlayerState
-	currentVolume    float32
-	mu               sync.RWMutex
+	client            *Client
+	voiceConnections  map[string]*discordgo.VoiceConnection
+	players           map[string]*audio.Player
+	playbackStatus    map[string]audio.PlayerState
+	lastKnownChannels map[string]string // NEW: Track last known channel per guild
+	currentVolume     float32
+	mu                sync.RWMutex
 }
 
 func NewVoiceManager(client *Client) *VoiceManager {
 	vm := &VoiceManager{
-		client:           client,
-		voiceConnections: make(map[string]*discordgo.VoiceConnection),
-		players:          make(map[string]*audio.Player),
-		playbackStatus:   make(map[string]audio.PlayerState),
-		currentVolume:    0.5,
+		client:            client,
+		voiceConnections:  make(map[string]*discordgo.VoiceConnection),
+		players:           make(map[string]*audio.Player),
+		playbackStatus:    make(map[string]audio.PlayerState),
+		lastKnownChannels: make(map[string]string), // Initialize the new map
+		currentVolume:     0.5,
 	}
 
 	// Register for player events
@@ -47,6 +49,9 @@ func (vm *VoiceManager) JoinChannel(guildID, channelID string) error {
 	defer vm.mu.Unlock()
 
 	vm.client.StartActivity()
+
+	// Save channel ID even before we try to join (in case of failure)
+	vm.lastKnownChannels[guildID] = channelID
 
 	if vc, ok := vm.voiceConnections[guildID]; ok {
 		if vc.ChannelID == channelID {
@@ -312,6 +317,28 @@ func (vm *VoiceManager) handleTrackFinished(guildID string, track *audio.Track) 
 	}
 }
 
+// ProtectVoiceConnection marks a voice connection as protected from automatic disconnection
+func (vm *VoiceManager) ProtectVoiceConnection(guildID string) {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+
+	// You could add a dedicated protection field here
+	// For now we'll use the existing playbackStatus to indicate protection
+	vm.playbackStatus[guildID] = audio.StatePlaying
+
+	logger.InfoLogger.Printf("Voice connection for guild %s is now protected", guildID)
+}
+
+// GetLastKnownChannel returns the last known voice channel in a guild
+func (vm *VoiceManager) GetLastKnownChannel(guildID string) string {
+	vm.mu.RLock()
+	defer vm.mu.RUnlock()
+
+	// Try to get from our own tracking
+	channelID := vm.lastKnownChannels[guildID]
+	return channelID
+}
+
 func (vm *VoiceManager) PausePlayback(guildID string) bool {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
@@ -366,4 +393,16 @@ func (vm *VoiceManager) GetPlayerState(guildID string) audio.PlayerState {
 	}
 
 	return audio.StateStopped
+}
+
+func (vm *VoiceManager) GetPlayer(guildID string) *audio.Player {
+	vm.mu.RLock()
+	defer vm.mu.RUnlock()
+
+	player, exists := vm.players[guildID]
+	if exists {
+		return player
+	}
+
+	return nil
 }

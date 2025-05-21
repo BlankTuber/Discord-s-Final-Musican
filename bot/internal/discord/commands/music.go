@@ -51,6 +51,7 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	options := i.ApplicationCommandData().Options
 	url := options[0].StringValue()
 
+	// Verify user is in a voice channel first (but don't join yet)
 	channelID, err := c.client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -59,20 +60,14 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		return
 	}
 
+	// Disable idle mode to prevent automatic VC changes during download
 	c.client.DisableIdleMode()
-
-	err = c.client.JoinVoiceChannel(i.GuildID, channelID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
-		})
-		return
-	}
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr("⏳ Downloading song..."),
 	})
 
+	// Download the track first
 	track, err := c.client.DownloaderClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -84,10 +79,28 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	track.Requester = i.Member.User.Username
 	track.RequestedAt = time.Now().Unix()
 
+	// Add to queue first (this will play the track when we join)
 	c.client.QueueManager.AddTrack(i.GuildID, track)
 
+	// Only join VC after download is complete and track is in queue
+	err = c.client.RobustJoinVoiceChannel(i.GuildID, channelID)
+	if err != nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr(fmt.Sprintf("⚠️ Added track to queue but had trouble joining voice channel: %s\nTry using /start if playback doesn't begin.", err.Error())),
+		})
+		return
+	}
+
+	// Double check connection and playback
+	if !c.client.VoiceManager.IsConnected(i.GuildID) {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("⚠️ Added to queue, but voice connection was lost. Try /start to begin playback."),
+		})
+		return
+	}
+
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(fmt.Sprintf("✅ Added to queue: **%s**", track.Title)),
+		Content: stringPtr(fmt.Sprintf("✅ Added to queue and playback started: **%s**", track.Title)),
 	})
 }
 
@@ -383,41 +396,49 @@ func (c *StartCommand) Options() []*discordgo.ApplicationCommandOption {
 	return []*discordgo.ApplicationCommandOption{}
 }
 
+// StartCommand handles the /start command
 func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 
-	// Check if we have a paused player first
-	isPaused := c.client.VoiceManager.GetPlayerState(i.GuildID) == audio.StatePaused
+	// Aggressively disable idle mode first thing
+	c.client.DisableIdleMode()
 
-	// If player is paused, resume
-	if isPaused {
+	// Check if we have a paused player first (simplest case)
+	playerState := c.client.VoiceManager.GetPlayerState(i.GuildID)
+	if playerState == audio.StatePaused {
+		logger.InfoLogger.Printf("Found paused player, attempting to resume")
 		success := c.client.VoiceManager.ResumePlayback(i.GuildID)
 		if success {
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 				Content: stringPtr("▶️ Playback resumed!"),
 			})
-		} else {
-			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-				Content: stringPtr("❌ Failed to resume playback."),
-			})
+			return // Important: Return here after successfully resuming
 		}
-		return
+		// If resume fails, we'll try to restart playback from queue below
 	}
 
-	// If not resuming, check queue
-	queue := c.client.QueueManager.GetQueue(i.GuildID)
+	// Check for current track and queue
 	currentTrack := c.client.QueueManager.GetCurrentTrack(i.GuildID)
+	queue := c.client.QueueManager.GetQueue(i.GuildID)
 
-	if len(queue) == 0 && currentTrack == nil {
+	// Get player directly to check for current track
+	var playerCurrentTrack *audio.Track
+	player := c.client.VoiceManager.GetPlayer(i.GuildID)
+	if player != nil {
+		playerCurrentTrack = player.GetCurrentTrack()
+	}
+
+	// Check if we have any tracks to play
+	if currentTrack == nil && playerCurrentTrack == nil && len(queue) == 0 {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ Queue is empty. Nothing to start."),
 		})
 		return
 	}
 
-	// Make sure the bot is in a voice channel
+	// Check if user is in a voice channel
 	channelID, err := c.client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -426,54 +447,98 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	// Join the voice channel if not already there
+	// First make sure we're not in radio mode
+	if c.client.RadioManager.IsPlaying() {
+		c.client.RadioManager.Stop()
+		time.Sleep(500 * time.Millisecond) // Give some time for radio to stop
+	}
+
+	// Now attempt to join the voice channel
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("🔄 Joining voice channel and preparing playback..."),
+	})
+
+	// Try to join the voice channel
 	err = c.client.JoinVoiceChannel(i.GuildID, channelID)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
+			Content: stringPtr(fmt.Sprintf("❌ Failed to join voice channel: %v", err)),
 		})
 		return
 	}
 
-	// Check track files before adding them
-	validTracks := make([]*audio.Track, 0)
+	// Create a new playlist using both current track and queue
+	var tracksToPlay []*audio.Track
 
+	// First check if we have a valid current track from queue manager
 	if currentTrack != nil && currentTrack.FilePath != "" {
 		if _, err := os.Stat(currentTrack.FilePath); err == nil {
-			validTracks = append(validTracks, currentTrack)
+			tracksToPlay = append(tracksToPlay, currentTrack)
 		}
 	}
 
-	for _, track := range queue {
-		if track.FilePath != "" {
-			if _, err := os.Stat(track.FilePath); err == nil {
-				validTracks = append(validTracks, track)
+	// Also check player's current track if different from queue manager's
+	if playerCurrentTrack != nil && playerCurrentTrack.FilePath != "" {
+		// Check if this track is already added (from currentTrack)
+		isDuplicate := false
+		if currentTrack != nil && currentTrack.FilePath == playerCurrentTrack.FilePath {
+			isDuplicate = true
+		}
+
+		if !isDuplicate {
+			if _, err := os.Stat(playerCurrentTrack.FilePath); err == nil {
+				tracksToPlay = append(tracksToPlay, playerCurrentTrack)
 			}
 		}
 	}
 
-	if len(validTracks) == 0 {
+	// Add queue items if any
+	for _, track := range queue {
+		if track.FilePath != "" {
+			if _, err := os.Stat(track.FilePath); err == nil {
+				tracksToPlay = append(tracksToPlay, track)
+			}
+		}
+	}
+
+	if len(tracksToPlay) == 0 {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ No valid tracks found in the queue. Files may be missing."),
+			Content: stringPtr("❌ No valid tracks found. Files may be missing."),
 		})
 		return
 	}
 
-	// Stop any current playback before starting new one
+	// Update status to show we're restarting playback
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("⏹️ Stopping current playback and preparing tracks..."),
+	})
+
 	c.client.VoiceManager.StopAllPlayback()
+	time.Sleep(800 * time.Millisecond) // Longer wait to ensure stop completes
+
+	// Clear existing queue and rebuild with our tracks
+	c.client.QueueManager.ClearQueue(i.GuildID)
 	time.Sleep(300 * time.Millisecond)
 
-	// Clear the queue and restart
-	c.client.QueueManager.ClearQueue(i.GuildID)
+	// Add tracks back to queue
+	addedCount := c.client.QueueManager.AddTracks(i.GuildID, tracksToPlay)
 
-	// Use AddTracks instead of repeated AddTrack calls
-	c.client.QueueManager.AddTracks(i.GuildID, validTracks)
+	if addedCount == 0 {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ Failed to add tracks to queue. Please try again."),
+		})
+		return
+	}
 
 	// Start playback
+	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("▶️ Starting playback..."),
+	})
+
 	c.client.StartPlayback(i.GuildID)
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr("▶️ Queue started!"),
+		Content: stringPtr(fmt.Sprintf("✅ Playback started with %d track(s)!", addedCount)),
 	})
 }
 
@@ -524,6 +589,15 @@ func (c *PauseCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 			Content: stringPtr("❌ No song is currently playing."),
 		})
 		return
+	}
+
+	// Store the current track in QueueManager to make it accessible by other commands
+	currentPlayer := c.client.VoiceManager.GetPlayer(i.GuildID)
+	if currentPlayer != nil {
+		pausedTrack := currentPlayer.GetCurrentTrack()
+		if pausedTrack != nil {
+			c.client.QueueManager.SetCurrentTrack(i.GuildID, pausedTrack)
+		}
 	}
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{

@@ -98,34 +98,6 @@ func (rm *RadioManager) SetVolume(volume float32) {
 	}
 }
 
-func (rm *RadioManager) Start() {
-	rm.mu.Lock()
-	if rm.isPaused {
-		rm.isPaused = false
-		rm.mu.Unlock()
-		logger.InfoLogger.Println("Radio streamer resumed from paused state")
-		return
-	}
-
-	if rm.isActive {
-		rm.mu.Unlock()
-		logger.InfoLogger.Println("Radio streamer already active, ignoring start request")
-		return
-	}
-
-	rm.isActive = true
-	streamURL := rm.streamURL
-	volume := rm.volume
-	rm.mu.Unlock()
-
-	logger.InfoLogger.Printf("Starting radio streamer with URL: %s and volume: %.2f", streamURL, volume)
-
-	// Stop all playback before starting radio
-	rm.client.VoiceManager.StopAllPlayback()
-
-	go rm.streamLoop()
-}
-
 func (rm *RadioManager) streamLoop() {
 	for {
 		rm.mu.RLock()
@@ -145,7 +117,7 @@ func (rm *RadioManager) streamLoop() {
 
 		// Make sure we're connected to the default voice channel
 		if !rm.client.VoiceManager.IsConnectedToChannel(defaultGuildID, defaultVCID) {
-			err := rm.client.JoinVoiceChannel(defaultGuildID, defaultVCID)
+			err := rm.client.RobustJoinVoiceChannel(defaultGuildID, defaultVCID)
 			if err != nil {
 				logger.ErrorLogger.Printf("Failed to join default voice channel for radio: %v", err)
 				time.Sleep(5 * time.Second)
@@ -188,6 +160,35 @@ func (rm *RadioManager) streamLoop() {
 	}
 }
 
+func (rm *RadioManager) Start() {
+	rm.mu.Lock()
+	if rm.isPaused {
+		rm.isPaused = false
+		rm.mu.Unlock()
+		logger.InfoLogger.Println("Radio streamer resumed from paused state")
+		return
+	}
+
+	if rm.isActive {
+		rm.mu.Unlock()
+		logger.InfoLogger.Println("Radio streamer already active, ignoring start request")
+		return
+	}
+
+	rm.isActive = true
+	streamURL := rm.streamURL
+	volume := rm.volume
+	rm.mu.Unlock()
+
+	logger.InfoLogger.Printf("Starting radio streamer with URL: %s and volume: %.2f", streamURL, volume)
+
+	// IMPORTANT: Removed client method call to prevent circular dependency
+	// Stop playback directly instead of calling client methods
+	rm.client.VoiceManager.StopAllPlayback()
+
+	go rm.streamLoop()
+}
+
 func (rm *RadioManager) Stop() {
 	rm.mu.Lock()
 	if !rm.isActive {
@@ -204,6 +205,9 @@ func (rm *RadioManager) Stop() {
 		rm.stopChan = make(chan bool, 1)
 		rm.stopChan <- true
 	}
+
+	// IMPORTANT: Remove any calls that might lead back to DisableIdleMode
+	logger.InfoLogger.Println("Radio stream stopped")
 }
 
 func (rm *RadioManager) Pause() {

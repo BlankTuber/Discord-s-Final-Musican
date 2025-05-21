@@ -16,6 +16,11 @@ import (
 	"quidque.com/discord-musican/internal/queue"
 )
 
+var (
+	disablingIdleModeMu sync.Mutex
+	disablingIdleMode   bool
+)
+
 type Client struct {
 	Token    string
 	ClientID string
@@ -180,10 +185,76 @@ func (c *Client) handleQueueEvent(event queue.QueueEvent) {
 }
 
 func (c *Client) StartPlayback(guildID string) {
-	// Make sure we're in a voice channel
-	if connected := c.VoiceManager.IsConnected(guildID); !connected {
-		logger.WarnLogger.Printf("Cannot start playback in guild %s: not connected to voice", guildID)
-		return
+	logger.InfoLogger.Printf("StartPlayback called for guild %s", guildID)
+
+	// Aggressively disable idle mode
+	c.DisableIdleMode()
+
+	// Make sure we're connected to voice before starting
+	if !c.VoiceManager.IsConnected(guildID) {
+		logger.WarnLogger.Printf("Voice connection not found for guild %s, attempting to reconnect", guildID)
+
+		// Try to find a valid channel ID to connect to
+		var channelID string
+
+		// First try to use the voice channel the bot was last in
+		if lastChannel := c.VoiceManager.GetLastKnownChannel(guildID); lastChannel != "" {
+			channelID = lastChannel
+			logger.InfoLogger.Printf("Using last known channel: %s", channelID)
+		} else {
+			// Otherwise check where guild members are
+			guild, err := c.Session.State.Guild(guildID)
+			if err != nil {
+				// If not in state, try fetching from API
+				guild, err = c.Session.Guild(guildID)
+				if err != nil {
+					logger.ErrorLogger.Printf("Failed to get guild info: %v", err)
+				}
+			}
+
+			if guild != nil {
+				// Look through voice states to find a channel with users
+				for _, vs := range guild.VoiceStates {
+					if vs.UserID != c.Session.State.User.ID && vs.ChannelID != "" {
+						channelID = vs.ChannelID
+						logger.InfoLogger.Printf("Found channel with users: %s", channelID)
+						break
+					}
+				}
+			}
+
+			// If still no channel found, fall back to default VC if available
+			if channelID == "" && c.DefaultVCID != "" && c.DefaultGuildID == guildID {
+				channelID = c.DefaultVCID
+				logger.InfoLogger.Printf("Falling back to default voice channel: %s", channelID)
+			}
+		}
+
+		if channelID == "" {
+			logger.ErrorLogger.Printf("Failed to find a voice channel to join in guild %s", guildID)
+			return
+		}
+
+		// Try to join with retries
+		var joinSuccess bool
+		for attempt := 0; attempt < 3; attempt++ {
+			err := c.RobustJoinVoiceChannel(guildID, channelID)
+			if err == nil {
+				joinSuccess = true
+				logger.InfoLogger.Printf("Successfully reconnected to voice channel %s", channelID)
+
+				// Wait a moment for the connection to stabilize
+				time.Sleep(500 * time.Millisecond)
+				break
+			}
+			logger.WarnLogger.Printf("Failed to join voice channel (attempt %d): %v", attempt+1, err)
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if !joinSuccess {
+			logger.ErrorLogger.Printf("Failed to reconnect to voice channel after multiple attempts")
+			return
+		}
 	}
 
 	// Stop the radio if it's playing
@@ -191,10 +262,54 @@ func (c *Client) StartPlayback(guildID string) {
 		c.RadioManager.Stop()
 		c.IsInIdleMode = false
 		logger.InfoLogger.Println("Radio stopped for track playback")
+		time.Sleep(300 * time.Millisecond) // Wait for radio to stop
 	}
 
 	// Start playing from the queue
+	logger.InfoLogger.Printf("Starting playback from queue in guild %s", guildID)
 	c.VoiceManager.StartPlayingFromQueue(guildID)
+}
+
+// JoinVoiceChannel joins a voice channel in a guild
+func (c *Client) JoinVoiceChannel(guildID, channelID string) error {
+	// Use VoiceManager's JoinChannel function
+	err := c.VoiceManager.JoinChannel(guildID, channelID)
+	if err == nil {
+		// Set last activity time
+		c.StartActivity()
+
+		// Store the channel in last known channels map
+		c.VoiceManager.mu.Lock()
+		c.VoiceManager.lastKnownChannels[guildID] = channelID
+		c.VoiceManager.mu.Unlock()
+	}
+	return err
+}
+
+// RobustJoinVoiceChannel tries multiple times to join a voice channel
+func (c *Client) RobustJoinVoiceChannel(guildID, channelID string) error {
+	// Try joining up to 3 times
+	var lastError error
+	for attempt := 0; attempt < 3; attempt++ {
+		// Call JoinVoiceChannel
+		err := c.JoinVoiceChannel(guildID, channelID)
+		if err == nil {
+			// Verify the connection succeeded
+			time.Sleep(300 * time.Millisecond)
+			if c.VoiceManager.IsConnectedToChannel(guildID, channelID) {
+				logger.InfoLogger.Printf("Successfully joined voice channel after %d attempt(s)", attempt+1)
+				return nil
+			}
+			lastError = fmt.Errorf("connection verification failed")
+		} else {
+			lastError = err
+		}
+
+		logger.WarnLogger.Printf("Join attempt %d failed: %v", attempt+1, lastError)
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return fmt.Errorf("failed to join voice channel after multiple attempts: %w", lastError)
 }
 
 func (c *Client) Connect() error {
@@ -295,10 +410,6 @@ func (c *Client) GetUserVoiceChannel(guildID, userID string) (string, error) {
 	return vs.ChannelID, nil
 }
 
-func (c *Client) JoinVoiceChannel(guildID, channelID string) error {
-	return c.VoiceManager.JoinChannel(guildID, channelID)
-}
-
 func (c *Client) LeaveVoiceChannel(guildID string) error {
 	return c.VoiceManager.LeaveChannel(guildID)
 }
@@ -369,7 +480,7 @@ func (c *Client) startIdleMode() {
 	if c.VoiceManager.IsConnectedToChannel(defaultGuildID, defaultVCID) {
 		logger.InfoLogger.Println("Already in the default voice channel, staying connected")
 	} else {
-		err := c.JoinVoiceChannel(defaultGuildID, defaultVCID)
+		err := c.RobustJoinVoiceChannel(defaultGuildID, defaultVCID)
 		if err != nil {
 			logger.ErrorLogger.Printf("Failed to join default voice channel: %v", err)
 
@@ -420,6 +531,16 @@ func (c *Client) checkIdleState() {
 
 	// Check if we're in a voice channel and it's empty
 	for guildID, channelID := range c.VoiceManager.GetConnectedChannels() {
+		// Check if there are tracks in the queue or active playback
+		queueLength := c.QueueManager.GetQueueLength(guildID)
+		playerState := c.VoiceManager.GetPlayerState(guildID)
+
+		// Don't enter idle mode if there's active playback or queued tracks
+		if queueLength > 0 || playerState == audio.StatePlaying || playerState == audio.StatePaused {
+			logger.InfoLogger.Println("Active playback or queued tracks exist, not entering idle mode")
+			return
+		}
+
 		if c.checkChannelEmpty(guildID, channelID) {
 			logger.InfoLogger.Println("Voice channel is empty, checking if we should enter idle mode")
 
@@ -449,6 +570,17 @@ func (c *Client) checkIdleState() {
 
 	// Check if we've been idle for too long
 	if timeSinceActivity.Seconds() > float64(idleTimeout) && !idleModeDisabled {
+		// Check if there is any active playback or queued tracks in any guild
+		for guildID := range c.VoiceManager.GetConnectedChannels() {
+			queueLength := c.QueueManager.GetQueueLength(guildID)
+			playerState := c.VoiceManager.GetPlayerState(guildID)
+
+			if queueLength > 0 || playerState == audio.StatePlaying || playerState == audio.StatePaused {
+				logger.InfoLogger.Println("Active playback or queued tracks, not entering idle mode despite timeout")
+				return
+			}
+		}
+
 		logger.InfoLogger.Printf("Bot idle for %v seconds, entering radio mode", int(timeSinceActivity.Seconds()))
 		c.startIdleMode()
 		return
@@ -464,11 +596,42 @@ func (c *Client) EnableIdleMode() {
 }
 
 func (c *Client) DisableIdleMode() {
-	c.Mu.Lock()
-	defer c.Mu.Unlock()
+	disablingIdleModeMu.Lock()
+	if disablingIdleMode {
+		disablingIdleModeMu.Unlock()
+		return
+	}
+	disablingIdleMode = true
+	disablingIdleModeMu.Unlock()
 
+	// Make sure we reset the flag when we're done
+	defer func() {
+		disablingIdleModeMu.Lock()
+		disablingIdleMode = false
+		disablingIdleModeMu.Unlock()
+	}()
+
+	c.Mu.Lock()
+
+	// Mark idle mode as disabled
 	c.IdleModeDisabled = true
-	logger.InfoLogger.Println("Idle mode disabled")
+
+	// Exit idle mode if we're in it
+	wasInIdleMode := c.IsInIdleMode
+	c.IsInIdleMode = false
+
+	// Update last activity time to prevent timeout-based idle mode
+	c.LastActivityTime = time.Now().Add(time.Hour * 24) // Set to far future
+
+	c.Mu.Unlock()
+
+	// Only stop radio if we were actually in idle mode
+	if wasInIdleMode && c.RadioManager.IsPlaying() {
+		logger.InfoLogger.Println("Stopping radio stream due to idle mode being disabled")
+		c.RadioManager.Stop()
+	}
+
+	logger.InfoLogger.Println("Idle mode disabled and prevented for 24 hours")
 }
 
 func (c *Client) handleReady(s *discordgo.Session, r *discordgo.Ready) {
@@ -487,7 +650,6 @@ func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.Voice
 			c.Mu.Lock()
 			wasInIdleMode := c.IsInIdleMode
 			c.IsInIdleMode = false
-			c.IdleModeDisabled = false
 			c.Mu.Unlock()
 
 			if wasInIdleMode {
@@ -496,10 +658,34 @@ func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.Voice
 
 			c.VoiceManager.HandleDisconnect(v.GuildID)
 
-			go func() {
-				time.Sleep(2 * time.Second)
-				c.startIdleMode()
-			}()
+			// Check if there are tracks in the queue - if so, try to rejoin
+			if c.QueueManager.GetQueueLength(v.GuildID) > 0 {
+				logger.InfoLogger.Printf("Queue has tracks, attempting to reconnect...")
+
+				// Try to find a valid voice channel to rejoin
+				lastChannel := c.VoiceManager.GetLastKnownChannel(v.GuildID)
+				if lastChannel != "" {
+					go func() {
+						time.Sleep(1 * time.Second) // Wait a bit before reconnecting
+						c.DisableIdleMode()
+						err := c.RobustJoinVoiceChannel(v.GuildID, lastChannel)
+						if err == nil {
+							logger.InfoLogger.Printf("Successfully reconnected to continue queue playback")
+							time.Sleep(500 * time.Millisecond)
+							c.StartPlayback(v.GuildID)
+						} else {
+							logger.ErrorLogger.Printf("Failed to reconnect: %v", err)
+						}
+					}()
+					return
+				}
+			} else {
+				// Only enter idle mode if queue is empty
+				go func() {
+					time.Sleep(2 * time.Second)
+					c.startIdleMode()
+				}()
+			}
 
 			return
 		}
@@ -542,7 +728,17 @@ func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.Voice
 		// Check if the bot is alone in a voice channel
 		for guildID, channelID := range c.VoiceManager.GetConnectedChannels() {
 			if c.checkChannelEmpty(guildID, channelID) {
-				logger.InfoLogger.Println("Bot is alone in voice channel, moving to idle channel")
+				logger.InfoLogger.Println("Bot is alone in voice channel, checking if should move to idle channel")
+
+				// Check if there is any active playback or queued tracks
+				queueLength := c.QueueManager.GetQueueLength(guildID)
+				playerState := c.VoiceManager.GetPlayerState(guildID)
+
+				// Don't enter idle mode if there's active playback or queued tracks
+				if queueLength > 0 || playerState == audio.StatePlaying || playerState == audio.StatePaused {
+					logger.InfoLogger.Println("Active playback or queued tracks, not entering idle mode")
+					continue
+				}
 
 				c.Mu.Lock()
 				defaultGuildID := c.DefaultGuildID
