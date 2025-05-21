@@ -46,6 +46,7 @@ func (h *SearchButtonHandler) ParseButtonID(customID string) (trackIndex int, gu
 	return trackIndex, parts[2], parts[3], nil
 }
 
+// Handle handles search button interactions
 func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Respond immediately to prevent timeout
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -116,7 +117,7 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 	selectedTrack := searchResults[trackIndex]
 	logger.InfoLogger.Printf("Selected track: %s", selectedTrack.Title)
 
-	channelID, err := h.client.GetUserVoiceChannel(guildID, userID)
+	channelID, err := h.client.GetUserVoiceChannel(guildID, i.Member.User.ID)
 	if err != nil {
 		logger.ErrorLogger.Printf("User not in a voice channel: %v", err)
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -125,13 +126,7 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// Stop radio if it's playing
-	if h.client.RadioManager.IsPlaying() {
-		logger.InfoLogger.Println("Stopping radio before track playback")
-		h.client.RadioManager.Stop()
-		time.Sleep(300 * time.Millisecond)
-	}
-
+	// Disable idle mode but don't stop radio yet - we'll stop it only if download succeeds
 	h.client.DisableIdleMode()
 
 	err = h.client.JoinVoiceChannel(guildID, channelID)
@@ -160,6 +155,22 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 			Content: stringPtr(fmt.Sprintf("❌ Failed to download song: %s", err.Error())),
 		})
 		return
+	}
+
+	// Check if the track is valid
+	if track == nil || track.Title == "" || track.FilePath == "" {
+		logger.ErrorLogger.Printf("Downloaded track is invalid or missing file")
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ Failed to download song: The track may be too large or unavailable"),
+		})
+		return
+	}
+
+	// Now that download is successful, stop radio if it's playing
+	if h.client.RadioManager.IsPlaying() {
+		logger.InfoLogger.Println("Stopping radio before track playback")
+		h.client.RadioManager.Stop()
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	track.Requester = i.Member.User.Username

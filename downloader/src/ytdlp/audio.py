@@ -3,6 +3,25 @@ import time
 import yt_dlp
 from ytdlp import utils
 
+def match_filter_func(info, max_duration_seconds=None, max_size_mb=None, allow_live=False):
+    if not allow_live and info.get('duration') is None:
+        return "Video is a live stream (duration is None)"
+        
+    if max_duration_seconds and info.get('duration', 0) > max_duration_seconds:
+        return f"The video is too long ({info['duration']} seconds > {max_duration_seconds} seconds)"
+    
+    if max_size_mb:
+        max_bytes = max_size_mb * 1024 * 1024
+        if info.get('filesize_approx', 0) > max_bytes:
+            return f"The file is too large ({info['filesize_approx'] / (1024*1024):.1f}MB > {max_size_mb}MB)"
+    
+    if not allow_live and info.get('duration', 0) > 12 * 3600:
+        title = info.get('title', '').lower()
+        if any(keyword in title for keyword in ['live', 'radio', '24/7', 'stream']):
+            return "Video appears to be a live stream (extremely long duration with stream keywords in title)"
+    
+    return None
+
 def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None, allow_live=False):
     platform = utils.get_platform(url)
     platform_prefix = utils.get_platform_prefix(platform)
@@ -38,16 +57,22 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 return None
             
             if not allow_live and info.get('duration') is None:
-                print(f"Skipping: Content is a live stream (duration is None)")
-                return None
+                error_msg = "Content is a live stream (duration is None)"
+                print(f"Skipping: {error_msg}")
+                # Return error information instead of None
+                return {'status': 'error', 'message': error_msg}
                 
             if max_duration_seconds and info.get('duration', 0) > max_duration_seconds:
-                print(f"Skipping: Duration ({info.get('duration')}s) exceeds limit ({max_duration_seconds}s)")
-                return None
+                error_msg = f"Duration ({info.get('duration')}s) exceeds limit ({max_duration_seconds}s)"
+                print(f"Skipping: {error_msg}")
+                # Return error information instead of None
+                return {'status': 'error', 'message': error_msg}
                 
             if max_size_mb and info.get('filesize_approx', 0) > max_size_mb * 1024 * 1024:
-                print(f"Skipping: Estimated size ({info.get('filesize_approx') / (1024*1024):.1f}MB) exceeds limit ({max_size_mb}MB)")
-                return None
+                error_msg = f"Estimated size ({info.get('filesize_approx') / (1024*1024):.1f}MB) exceeds limit ({max_size_mb}MB)"
+                print(f"Skipping: {error_msg}")
+                # Return error information instead of None
+                return {'status': 'error', 'message': error_msg}
             
             filename = f"{platform_prefix}_{info['id']}.mp3"
             full_path = os.path.abspath(os.path.join(download_path, filename))
@@ -95,23 +120,31 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                     info, max_duration_seconds, max_size_mb, allow_live
                 )
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-                if not info:
-                    print(f"Failed to extract info during download for: {url}")
-                    return None
-                
-                filename = f"{platform_prefix}_{info['id']}.mp3"
-                full_path = os.path.join(download_path, filename)
-                
-                # Verify the download was successful
-                file_exists = os.path.exists(full_path)
-                if not file_exists:
-                    print(f"Download completed but file not found: {full_path}")
-                    return None
-                
-                file_size = os.path.getsize(full_path)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    
+                    if not info:
+                        error_msg = "Failed to extract info during download"
+                        print(f"{error_msg} for: {url}")
+                        return {'status': 'error', 'message': error_msg}
+                    
+                    filename = f"{platform_prefix}_{info['id']}.mp3"
+                    full_path = os.path.join(download_path, filename)
+                    
+                    # Verify the download was successful
+                    file_exists = os.path.exists(full_path)
+                    if not file_exists:
+                        error_msg = "Download completed but file not found"
+                        print(f"{error_msg}: {full_path}")
+                        return {'status': 'error', 'message': error_msg}
+                    
+                    file_size = os.path.getsize(full_path)
+            except yt_dlp.utils.DownloadError as e:
+                # This will catch filter match errors too
+                error_msg = str(e)
+                print(f"Download error: {error_msg}")
+                return {'status': 'error', 'message': error_msg}
         
         # Only interact with the database after confirming the download was successful
         if file_exists:
@@ -168,39 +201,40 @@ def download(url, download_path, db, max_duration_seconds=None, max_size_mb=None
                 'skipped': False
             }
         else:
-            print(f"File does not exist after download: {full_path}")
-            return None
+            error_msg = f"File does not exist after download"
+            print(f"{error_msg}: {full_path}")
+            return {'status': 'error', 'message': error_msg}
             
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e).lower()
         
         if "private" in error_msg:
             print(f"Download error: This video is private")
-            raise yt_dlp.utils.DownloadError("This video is private")
+            return {'status': 'error', 'message': "This video is private"}
         elif any(term in error_msg for term in ["premium", "paywall", "subscribe", "login", "member", "paid"]):
             print(f"Download error: This content requires a premium account or login")
-            raise yt_dlp.utils.DownloadError("This content requires a premium account or login")
+            return {'status': 'error', 'message': "This content requires a premium account or login"}
         elif any(term in error_msg for term in ["removed", "deleted", "taken down"]):
             print(f"Download error: This video has been removed or deleted")
-            raise yt_dlp.utils.DownloadError("This video has been removed or deleted")
+            return {'status': 'error', 'message': "This video has been removed or deleted"}
         elif "unavailable" in error_msg:
             print(f"Download error: This video is unavailable")
-            raise yt_dlp.utils.DownloadError("This video is unavailable")
+            return {'status': 'error', 'message': "This video is unavailable"}
         elif "copyright" in error_msg:
             print(f"Download error: This video is blocked due to copyright issues")
-            raise yt_dlp.utils.DownloadError("This video is blocked due to copyright issues")
+            return {'status': 'error', 'message': "This video is blocked due to copyright issues"}
         elif "age" in error_msg and ("restrict" in error_msg or "verify" in error_msg):
             print(f"Download error: This video is age-restricted")
-            raise yt_dlp.utils.DownloadError("This video is age-restricted")
+            return {'status': 'error', 'message': "This video is age-restricted"}
         elif ("geo" in error_msg and "block" in error_msg) or "country" in error_msg:
             print(f"Download error: This video is not available in your country")
-            raise yt_dlp.utils.DownloadError("This video is not available in your country")
+            return {'status': 'error', 'message': "This video is not available in your country"}
         elif "not exist" in error_msg or "no longer" in error_msg or "not found" in error_msg:
             print(f"Download error: This video does not exist or could not be found")
-            raise yt_dlp.utils.DownloadError("This video does not exist or could not be found")
+            return {'status': 'error', 'message': "This video does not exist or could not be found"}
         else:
             print(f"Download error: {e}")
-            raise
+            return {'status': 'error', 'message': str(e)}
     except Exception as e:
         print(f"Error downloading audio: {e}")
-        raise
+        return {'status': 'error', 'message': str(e)}

@@ -95,6 +95,11 @@ def download_audio(url, max_duration_seconds=None, max_size_mb=None, allow_live=
         
         elapsed = time.time() - start_time
         
+        # Check if we got an error response
+        if isinstance(result, dict) and result.get('status') == 'error':
+            logger.logger.error(f"Download failed after {elapsed:.2f} seconds: {result.get('message', 'Unknown error')}")
+            return result
+        
         if not result:
             logger.logger.error(f"Download failed after {elapsed:.2f} seconds")
             return {"status": "error", "message": "Download failed"}
@@ -127,19 +132,12 @@ def download_audio(url, max_duration_seconds=None, max_size_mb=None, allow_live=
             logger.logger.debug(f"Traceback: {traceback.format_exc()}")
         
         logger.logger.info(f"Returning download result directly: {result.get('title', 'Unknown')}")
-        return {
-            "status": "success",
-            "title": result.get('title', 'Unknown'),
-            "filename": result.get('filename', ''),
-            "duration": result.get('duration'),
-            "file_size": result.get('file_size'),
-            "platform": result.get('platform', platform),
-            "artist": result.get('artist', ''),
-            "thumbnail_url": result.get('thumbnail_url', ''),
-            "is_stream": result.get('is_stream', False),
-            "id": result.get('id'),
-            "skipped": result.get('skipped', False)
-        }
+        
+        # Add a status field if not present
+        if isinstance(result, dict) and 'status' not in result:
+            result['status'] = 'success'
+            
+        return result
     except Exception as e:
         elapsed = time.time() - start_time
         logger.logger.error(f"Error in download_audio after {elapsed:.2f} seconds: {e}")

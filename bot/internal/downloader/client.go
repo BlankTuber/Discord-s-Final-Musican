@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -397,18 +398,38 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 		return nil, errors.New(response.Error)
 	}
 
+	// Check if response contains an error or status message
+	if status, ok := response.Data["status"].(string); ok && status == "error" {
+		errorMsg := "Download failed"
+		if msg, ok := response.Data["message"].(string); ok && msg != "" {
+			errorMsg = msg
+		}
+		return nil, errors.New(errorMsg)
+	}
+
+	// Check if we got a valid title and filename
+	title, titleOk := response.Data["title"].(string)
+	filename, filenameOk := response.Data["filename"].(string)
+
+	if !titleOk || title == "" || !filenameOk || filename == "" {
+		// Check if we can get a more specific error message
+		if skipped, ok := response.Data["skipped"].(bool); ok && skipped {
+			return nil, errors.New("download was skipped, possibly due to size or duration limits")
+		}
+		return nil, errors.New("download failed - received invalid track data")
+	}
+
+	// File existence check
+	if _, err := os.Stat(filename); os.IsNotExist(err) {
+		return nil, errors.New("download completed but file is missing")
+	}
+
 	track := &audio.Track{
 		URL:            url,
+		Title:          title,
+		FilePath:       filename,
 		RequestedAt:    time.Now().Unix(),
 		DownloadStatus: "completed",
-	}
-
-	if title, ok := response.Data["title"].(string); ok {
-		track.Title = title
-	}
-
-	if filePath, ok := response.Data["filename"].(string); ok {
-		track.FilePath = filePath
 	}
 
 	if duration, ok := response.Data["duration"].(float64); ok {

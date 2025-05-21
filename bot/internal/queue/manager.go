@@ -69,15 +69,25 @@ func (m *Manager) fireEvent(event QueueEvent) {
 
 func (m *Manager) AddTrack(guildID string, track *audio.Track) {
 	if track == nil {
+		logger.WarnLogger.Println("Attempted to add nil track to queue")
+		return
+	}
+
+	// Validate the track has required data
+	if track.Title == "" {
+		logger.WarnLogger.Println("Attempted to add track with empty title to queue")
+		return
+	}
+
+	if track.FilePath == "" {
+		logger.WarnLogger.Println("Attempted to add track with empty file path to queue")
 		return
 	}
 
 	// Verify file exists before adding to queue
-	if track.FilePath != "" {
-		if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
-			logger.WarnLogger.Printf("Skipping track with missing file: %s", track.FilePath)
-			return
-		}
+	if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
+		logger.WarnLogger.Printf("Skipping track with missing file: %s", track.FilePath)
+		return
 	}
 
 	m.mu.Lock()
@@ -97,6 +107,8 @@ func (m *Manager) AddTrack(guildID string, track *audio.Track) {
 			}
 		}()
 	}
+
+	logger.InfoLogger.Printf("Added track to queue: %s (File: %s)", track.Title, track.FilePath)
 
 	m.fireEvent(QueueEvent{
 		Type:    EventTrackAdded,
