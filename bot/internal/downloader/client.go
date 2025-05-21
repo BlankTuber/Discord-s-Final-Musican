@@ -26,6 +26,7 @@ const (
 type Message struct {
 	Type      MessageType    `json:"type"`
 	Command   string         `json:"command"`
+	Event     string         `json:"event,omitempty"` // Add this field for events
 	ID        string         `json:"id"`
 	Params    map[string]any `json:"params,omitempty"`
 	Data      map[string]any `json:"data,omitempty"`
@@ -253,7 +254,9 @@ func (c *Client) handleMessage(message *Message) {
 		c.mu.Unlock()
 
 		if callback != nil {
-			go callback(message.Command, message.Data)
+			go callback(message.Event, message.Data)
+		} else {
+			logger.InfoLogger.Printf("Received event %s but no callback registered", message.Event)
 		}
 
 	default:
@@ -512,6 +515,29 @@ func (c *Client) GetPlaylistInfo(url string, maxItems int) (string, int, error) 
 	}
 
 	return playlistTitle, totalTracks, nil
+}
+
+func (c *Client) DownloadPlaylist(url string, maxItems int, maxDuration int, maxSize int, allowLive bool, requester string, guildID string) error {
+	params := map[string]any{
+		"url":                  url,
+		"max_items":            maxItems,
+		"max_duration_seconds": maxDuration,
+		"max_size_mb":          maxSize,
+		"allow_live":           allowLive,
+		"requester":            requester,
+		"guild_id":             guildID,
+	}
+
+	response, err := c.SendRequest("download_playlist", params)
+	if err != nil {
+		return err
+	}
+
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+
+	return nil
 }
 
 func (c *Client) DownloadPlaylistItem(url string, index int, maxDuration int, maxSize int, allowLive bool) (*audio.Track, error) {

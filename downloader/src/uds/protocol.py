@@ -32,6 +32,18 @@ RESPONSE_SCHEMA = {
     }
 }
 
+EVENT_SCHEMA = {
+    "type": "object",
+    "required": ["type", "event", "data"],
+    "properties": {
+        "type": {"type": "string", "enum": ["event"]},
+        "event": {"type": "string"},
+        "data": {"type": "object"},
+        "id": {"type": "string"},
+        "timestamp": {"type": "string"}
+    }
+}
+
 def validate_request(request):
     if not isinstance(request, dict):
         return False
@@ -55,6 +67,7 @@ def parse_request(data):
 
 def create_success_response(request_id, data=None):
     response = {
+        "type": "response",
         "status": "success",
         "id": request_id,
         "timestamp": datetime.utcnow().isoformat()
@@ -70,8 +83,23 @@ def create_error_response(error_message, request_id=None):
         request_id = str(uuid.uuid4())
         
     return {
+        "type": "response",
         "status": "error",
         "id": request_id,
         "error": error_message,
         "timestamp": datetime.utcnow().isoformat()
     }
+
+def create_event_message(event_type, data=None):
+    """Create an event message to send to clients"""
+    event = {
+        "type": "event",
+        "event": event_type,
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    if data is not None:
+        event["data"] = data
+        
+    return event

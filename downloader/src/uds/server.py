@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import traceback
+import uuid
 from uds import handlers, utils, protocol
 import logger
 
@@ -10,10 +11,15 @@ _socket = None
 _thread = None
 _running = False
 _config = {}
+_clients = {}  # Dictionary to track active client connections
 
 def init(cfg):
     global _config
     _config.update(cfg)
+    
+    # Register as an event listener to forward events to clients
+    handlers.register_event_listener(handle_event)
+    
     logger.logger.info("UDS server module initialized")
 
 def start(socket_path, allowed_origins):
@@ -42,13 +48,23 @@ def start(socket_path, allowed_origins):
         return False
 
 def stop():
-    global _socket, _thread, _running
+    global _socket, _thread, _running, _clients
     
     if not _running:
         return False
     
     try:
         _running = False
+        
+        # Close all client connections
+        for client_id, client_data in list(_clients.items()):
+            try:
+                if client_data['socket']:
+                    client_data['socket'].close()
+            except Exception as e:
+                logger.logger.error(f"Error closing client connection {client_id}: {e}")
+        
+        _clients.clear()
         
         if _socket:
             _socket.close()
@@ -74,11 +90,21 @@ def _server_loop():
             client, _ = _socket.accept()
             _socket.settimeout(None)
             
-            logger.logger.info("New client connection accepted")
+            # Generate a unique client ID
+            client_id = str(uuid.uuid4())
+            
+            logger.logger.info(f"New client connection accepted (ID: {client_id})")
+            
+            # Store client connection
+            _clients[client_id] = {
+                'socket': client,
+                'connected': True,
+                'last_activity': time.time()
+            }
             
             client_thread = threading.Thread(
                 target=_handle_client,
-                args=(client,),
+                args=(client, client_id),
                 daemon=True
             )
             client_thread.start()
@@ -94,46 +120,92 @@ def _server_loop():
     
     logger.logger.info("Server loop terminated")
 
-def _handle_client(client_socket):
-    start_time = time.time()
+def _handle_client(client_socket, client_id):
+    global _clients
+    
     try:
         client_socket.settimeout(300)  # 5 minute timeout for client operations
-        logger.logger.info("Reading request from client...")
+        logger.logger.info(f"Starting client handler for {client_id}")
         
-        data = utils.read_json_message(client_socket)
-        if not data:
-            logger.logger.warning("No data received from client")
-            return
-        
-        logger.logger.info(f"Received data of length {len(data)}")
-        
-        request = protocol.parse_request(data)
-        if not request:
-            logger.logger.warning("Invalid request format")
-            error_response = protocol.create_error_response("Invalid request format")
-            utils.send_json_message(client_socket, error_response)
-            return
-        
-        command = request.get("command", "unknown")
-        request_id = request.get("id", "unknown")
-        logger.logger.info(f"Handling request - Command: {command}, ID: {request_id}")
-        
-        response = handlers.process_request(request, _config)
-        
-        logger.logger.info(f"Sending response for {command}, ID: {request_id}")
-        utils.send_json_message(client_socket, response)
-        elapsed = time.time() - start_time
-        logger.logger.info(f"Request handled in {elapsed:.2f} seconds - Command: {command}, ID: {request_id}")
-        
+        while _running and client_id in _clients and _clients[client_id]['connected']:
+            try:
+                logger.logger.info(f"Reading request from client {client_id}...")
+                
+                data = utils.read_json_message(client_socket)
+                if not data:
+                    logger.logger.warning(f"No data received from client {client_id}, closing connection")
+                    break
+                
+                logger.logger.info(f"Received data of length {len(data)} from client {client_id}")
+                
+                # Update activity timestamp
+                _clients[client_id]['last_activity'] = time.time()
+                
+                request = protocol.parse_request(data)
+                if not request:
+                    logger.logger.warning(f"Invalid request format from client {client_id}")
+                    error_response = protocol.create_error_response("Invalid request format")
+                    utils.send_json_message(client_socket, error_response)
+                    continue
+                
+                command = request.get("command", "unknown")
+                request_id = request.get("id", "unknown")
+                logger.logger.info(f"Handling request from client {client_id} - Command: {command}, ID: {request_id}")
+                
+                response = handlers.process_request(request, _config)
+                
+                logger.logger.info(f"Sending response for {command}, ID: {request_id} to client {client_id}")
+                utils.send_json_message(client_socket, response)
+                logger.logger.info(f"Request handled - Command: {command}, ID: {request_id}, Client: {client_id}")
+                
+            except socket.timeout:
+                logger.logger.warning(f"Client {client_id} socket timed out waiting for data")
+                break
+            except ConnectionResetError:
+                logger.logger.warning(f"Client {client_id} connection reset")
+                break
+            except Exception as e:
+                logger.logger.error(f"Error handling client {client_id}: {e}")
+                logger.logger.debug(f"Traceback: {traceback.format_exc()}")
+                try:
+                    error_response = protocol.create_error_response(f"Server error: {str(e)}")
+                    utils.send_json_message(client_socket, error_response)
+                except Exception as e2:
+                    logger.logger.error(f"Failed to send error response to client {client_id}: {e2}")
+                break
     except Exception as e:
-        elapsed = time.time() - start_time
-        logger.logger.error(f"Error handling client after {elapsed:.2f} seconds: {e}")
+        logger.logger.error(f"Client {client_id} handler exception: {e}")
         logger.logger.debug(f"Traceback: {traceback.format_exc()}")
-        try:
-            error_response = protocol.create_error_response(f"Server error: {str(e)}")
-            utils.send_json_message(client_socket, error_response)
-        except Exception as e2:
-            logger.logger.error(f"Failed to send error response: {e2}")
     finally:
-        client_socket.close()
-        logger.logger.info("Client connection closed")
+        try:
+            client_socket.close()
+        except:
+            pass
+        
+        # Remove client from active clients
+        if client_id in _clients:
+            del _clients[client_id]
+        
+        logger.logger.info(f"Client {client_id} connection closed")
+
+def handle_event(event_type, event_data):
+    """Handle events from the ytdlp_handler and forward to connected clients"""
+    global _clients
+    
+    logger.logger.info(f"Received event: {event_type}")
+    
+    # Create an event message
+    event_message = protocol.create_event_message(event_type, event_data)
+    
+    # Send to all connected clients
+    for client_id, client_data in list(_clients.items()):
+        try:
+            if client_data['connected']:
+                logger.logger.info(f"Sending event {event_type} to client {client_id}")
+                utils.send_json_message(client_data['socket'], event_message)
+            else:
+                logger.logger.debug(f"Skipping disconnected client {client_id}")
+        except Exception as e:
+            logger.logger.error(f"Error sending event to client {client_id}: {e}")
+            # Mark client as disconnected
+            client_data['connected'] = False

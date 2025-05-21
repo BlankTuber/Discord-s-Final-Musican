@@ -6,12 +6,16 @@ from uds import protocol
 
 _config = {}
 _command_handlers = {}
+_event_listeners = []
 
 def init(cfg):
     global _config
     _config.update(cfg)
     
     register_default_handlers()
+    
+    # Register for events from ytdlp_handler
+    ytdlp_handler.register_event_callback(handle_ytdlp_event)
     
     print("UDS handlers module initialized")
 
@@ -22,11 +26,30 @@ def register_handler(command, handler_func):
     _command_handlers[command] = handler_func
     return True
 
+def register_event_listener(listener_func):
+    """Register a function to listen for events"""
+    global _event_listeners
+    if callable(listener_func) and listener_func not in _event_listeners:
+        _event_listeners.append(listener_func)
+        return True
+    return False
+
+def handle_ytdlp_event(event_type, event_data):
+    """Handle events from ytdlp_handler and forward them to listeners"""
+    for listener in _event_listeners:
+        try:
+            listener(event_type, event_data)
+        except Exception as e:
+            print(f"Error in event listener: {e}")
+            print(traceback.format_exc())
+
 def register_default_handlers():
     register_handler("download_audio", handle_download_audio)
     register_handler("download_playlist", handle_download_playlist)
     register_handler("download_playlist_item", handle_download_playlist_item)
     register_handler("get_playlist_info", handle_get_playlist_info)
+    register_handler("start_playlist_download", handle_start_playlist_download)
+    register_handler("get_playlist_download_status", handle_get_playlist_download_status)
     register_handler("search", handle_search)
     register_handler("ping", handle_ping)
 
@@ -102,6 +125,8 @@ def handle_download_playlist(params, config):
     max_duration = params.get("max_duration_seconds")
     max_size = params.get("max_size_mb")
     allow_live = params.get("allow_live", False)
+    requester = params.get("requester")
+    guild_id = params.get("guild_id")
     
     print(f"UDS: Downloading playlist from URL: {url}, max items: {max_items}")
     start_time = time.time()
@@ -111,7 +136,9 @@ def handle_download_playlist(params, config):
         max_items=max_items,
         max_duration_seconds=max_duration, 
         max_size_mb=max_size, 
-        allow_live=allow_live
+        allow_live=allow_live,
+        requester=requester,
+        guild_id=guild_id
     )
     
     elapsed = time.time() - start_time
@@ -125,6 +152,57 @@ def handle_download_playlist(params, config):
     print(f"UDS: Playlist download completed in {elapsed:.2f} seconds, {successful} of {item_count} tracks downloaded")
         
     return result
+
+def handle_start_playlist_download(params, config):
+    url = params.get("url")
+    
+    if not url:
+        print("UDS: URL is required for start_playlist_download")
+        raise ValueError("URL is required")
+    
+    max_items = params.get("max_items")
+    max_duration = params.get("max_duration_seconds")
+    max_size = params.get("max_size_mb")
+    allow_live = params.get("allow_live", False)
+    requester = params.get("requester")
+    guild_id = params.get("guild_id")
+    
+    print(f"UDS: Starting async playlist download from URL: {url}, max items: {max_items}")
+    
+    result = ytdlp_handler.start_playlist_download(
+        url, 
+        max_items=max_items,
+        max_duration_seconds=max_duration, 
+        max_size_mb=max_size, 
+        allow_live=allow_live,
+        requester=requester,
+        guild_id=guild_id
+    )
+    
+    if not result or result.get("status") == "error":
+        print(f"UDS: Starting playlist download failed for URL: {url}")
+        raise Exception(result.get("message", "Starting playlist download failed"))
+    
+    print(f"UDS: Started playlist download for '{result.get('playlist_title')}' with {result.get('total_tracks')} tracks")
+    
+    return result
+
+def handle_get_playlist_download_status(params, config):
+    playlist_id = params.get("playlist_id")
+    
+    if not playlist_id:
+        print("UDS: playlist_id is required for get_playlist_download_status")
+        raise ValueError("playlist_id is required")
+    
+    # This is a placeholder for now - we would need to track download status
+    # In a real implementation, this would check a database or in-memory status
+    return {
+        "playlist_id": playlist_id,
+        "status": "in_progress",
+        "total_tracks": 0,
+        "downloaded_tracks": 0,
+        "failed_tracks": 0
+    }
 
 def handle_get_playlist_info(params, config):
     url = params.get("url")

@@ -1,4 +1,4 @@
-from ytdlp import audio, playlist, search as search_module, utils
+from ytdlp import audio, playlist, search as search_module, utils, streaming
 import os
 import time
 import traceback
@@ -8,6 +8,7 @@ import yt_dlp
 
 config = {}
 db = None
+event_callbacks = []
 
 def initialize(cfg):
     global config, db
@@ -25,6 +26,24 @@ def initialize(cfg):
     
     db = Database(db_path)
     logger.logger.info(f"Connected to database at: {db_path}")
+
+def register_event_callback(callback):
+    """Register a callback function to be called when events occur"""
+    global event_callbacks
+    if callback not in event_callbacks:
+        event_callbacks.append(callback)
+        return True
+    return False
+
+def fire_event(event_type, event_data):
+    """Fire an event to all registered callbacks"""
+    global event_callbacks
+    for callback in event_callbacks:
+        try:
+            callback(event_type, event_data)
+        except Exception as e:
+            logger.logger.error(f"Error in event callback: {e}")
+            logger.logger.debug(f"Traceback: {traceback.format_exc()}")
 
 def download_audio(url, max_duration_seconds=None, max_size_mb=None, allow_live=False):
     logger.logger.info(f"Starting download_audio for URL: {url}")
@@ -127,7 +146,7 @@ def download_audio(url, max_duration_seconds=None, max_size_mb=None, allow_live=
         logger.logger.debug(f"Traceback: {traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
 
-def download_playlist(url, max_items=None, max_duration_seconds=None, max_size_mb=None, allow_live=False):
+def download_playlist(url, max_items=None, max_duration_seconds=None, max_size_mb=None, allow_live=False, requester=None, guild_id=None):
     logger.logger.info(f"Starting download_playlist for URL: {url}, max_items: {max_items}")
     start_time = time.time()
     
@@ -148,11 +167,16 @@ def download_playlist(url, max_items=None, max_duration_seconds=None, max_size_m
             logger.logger.error(f"Error checking playlist in database: {e}")
             logger.logger.debug(f"Traceback: {traceback.format_exc()}")
             
-        logger.logger.info(f"Starting playlist download with params: max_items={max_items}, max_duration={max_duration_seconds}, max_size={max_size_mb}")
-        result = playlist.download(
+        logger.logger.info(f"Starting streaming playlist download with params: max_items={max_items}, max_duration={max_duration_seconds}, max_size={max_size_mb}")
+        
+        # Use the streaming download method which fires events
+        result = streaming.download_playlist_streaming(
             url, 
             config["download_path"], 
             db,
+            event_callback=fire_event,  # Pass our event firing function
+            requester=requester,
+            guild_id=guild_id,
             max_items=max_items,
             max_duration_seconds=max_duration_seconds, 
             max_size_mb=max_size_mb, 
@@ -404,3 +428,65 @@ def search(query, platform='youtube', limit=5, include_live=False):
         logger.logger.error(f"Error in search after {elapsed:.2f} seconds: {e}")
         logger.logger.debug(f"Traceback: {traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
+
+def start_playlist_download(url, max_items=None, max_duration_seconds=None, max_size_mb=None, allow_live=False, requester=None, guild_id=None):
+    """
+    Start a playlist download in a separate thread, returning a playlist ID
+    so the client can check for updates
+    """
+    logger.logger.info(f"Starting async playlist download for URL: {url}, max_items: {max_items}")
+    
+    # Generate a unique playlist ID
+    import uuid
+    playlist_id = str(uuid.uuid4())
+    
+    # Start the download in a background thread
+    import threading
+    thread = threading.Thread(
+        target=_background_playlist_download,
+        args=(playlist_id, url, max_items, max_duration_seconds, max_size_mb, allow_live, requester, guild_id)
+    )
+    thread.daemon = True
+    thread.start()
+    
+    # Get initial playlist info for the response
+    playlist_info = get_playlist_info(url, max_items)
+    if playlist_info.get("status") == "error":
+        return playlist_info
+    
+    return {
+        "status": "success",
+        "playlist_id": playlist_id,
+        "playlist_title": playlist_info.get("playlist_title", "Unknown Playlist"),
+        "total_tracks": playlist_info.get("total_tracks", 0),
+        "is_playlist": playlist_info.get("is_playlist", True)
+    }
+
+def _background_playlist_download(playlist_id, url, max_items, max_duration_seconds, max_size_mb, allow_live, requester, guild_id):
+    """Background thread to download a playlist and send events"""
+    try:
+        result = download_playlist(
+            url, 
+            max_items=max_items,
+            max_duration_seconds=max_duration_seconds, 
+            max_size_mb=max_size_mb, 
+            allow_live=allow_live,
+            requester=requester,
+            guild_id=guild_id
+        )
+        
+        # Send a final event when the playlist is complete
+        fire_event("playlist_download_completed", {
+            "playlist_id": playlist_id,
+            "result": result
+        })
+        
+    except Exception as e:
+        logger.logger.error(f"Error in background playlist download: {e}")
+        logger.logger.debug(f"Traceback: {traceback.format_exc()}")
+        
+        # Send an error event
+        fire_event("playlist_download_error", {
+            "playlist_id": playlist_id,
+            "error": str(e)
+        })
