@@ -23,12 +23,12 @@ func NewManager(dbPath string) (*Manager, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Set database connection options
+	
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(time.Hour)
 
-	// Test the connection
+	
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
@@ -250,7 +250,7 @@ func (m *Manager) GetQueue(guildID string, includePlayed bool) ([]*audio.Track, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// First get the queue ID
+	
 	var queueID int64
 	queryQueue := `SELECT id FROM queues WHERE guild_id = ?`
 	err := m.db.QueryRow(queryQueue, guildID).Scan(&queueID)
@@ -261,7 +261,7 @@ func (m *Manager) GetQueue(guildID string, includePlayed bool) ([]*audio.Track, 
 		return nil, fmt.Errorf("error querying queue: %w", err)
 	}
 
-	// Modify query to include played items if requested
+	
 	queryItems := `
 		SELECT qi.title, qi.url, qi.duration, qi.requester, qi.requested_at, s.file_path, 
 			s.thumbnail_url, s.artist, s.is_stream, qi.position, qi.played
@@ -332,12 +332,12 @@ func (m *Manager) SaveQueue(guildID string, tracks []*audio.Track) error {
 
 	currentTime := time.Now().Unix()
 
-	// Check if the queue exists
+	
 	var queueID int64
 	queryQueue := `SELECT id FROM queues WHERE guild_id = ?`
 	err = tx.QueryRow(queryQueue, guildID).Scan(&queueID)
 	if err == sql.ErrNoRows {
-		// Create a new queue
+		
 		result, err := tx.Exec(`
 			INSERT INTO queues (guild_id, created_at, updated_at)
 			VALUES (?, ?, ?)`, guildID, currentTime, currentTime)
@@ -352,14 +352,14 @@ func (m *Manager) SaveQueue(guildID string, tracks []*audio.Track) error {
 	} else if err != nil {
 		return fmt.Errorf("error checking existing queue: %w", err)
 	} else {
-		// Update the existing queue timestamp
+		
 		_, err = tx.Exec(`
 			UPDATE queues SET updated_at = ? WHERE id = ?`, currentTime, queueID)
 		if err != nil {
 			return fmt.Errorf("error updating queue timestamp: %w", err)
 		}
 
-		// Clear unplayed items from the existing queue
+		
 		_, err = tx.Exec(`
 			DELETE FROM queue_items WHERE queue_id = ? AND played = 0`, queueID)
 		if err != nil {
@@ -367,11 +367,11 @@ func (m *Manager) SaveQueue(guildID string, tracks []*audio.Track) error {
 		}
 	}
 
-	// Add new tracks to the queue
+	
 	for i, track := range tracks {
 		var songID *int64
 		if track.URL != "" {
-			// Try to find the song ID from the URL
+			
 			var id int64
 			err = tx.QueryRow(`SELECT id FROM songs WHERE url = ?`, track.URL).Scan(&id)
 			if err == nil {
@@ -408,7 +408,7 @@ func (m *Manager) GetCurrentPlayingTrack(guildID string) (*audio.Track, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// First get the queue ID
+	
 	var queueID int64
 	queryQueue := `SELECT id FROM queues WHERE guild_id = ?`
 	err := m.db.QueryRow(queryQueue, guildID).Scan(&queueID)
@@ -419,7 +419,7 @@ func (m *Manager) GetCurrentPlayingTrack(guildID string) (*audio.Track, error) {
 		return nil, fmt.Errorf("error querying queue: %w", err)
 	}
 
-	// Find the most recently played track (highest position with played=1)
+	
 	queryItems := `
 		SELECT qi.title, qi.url, qi.duration, qi.requester, qi.requested_at, s.file_path, 
 			s.thumbnail_url, s.artist, s.is_stream, qi.position
@@ -463,7 +463,7 @@ func (m *Manager) MarkQueueItemPlayed(guildID string, position int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// First get the queue ID
+	
 	var queueID int64
 	queryQueue := `SELECT id FROM queues WHERE guild_id = ?`
 	err := m.db.QueryRow(queryQueue, guildID).Scan(&queueID)
@@ -474,7 +474,7 @@ func (m *Manager) MarkQueueItemPlayed(guildID string, position int) error {
 		return fmt.Errorf("error querying queue: %w", err)
 	}
 
-	// Mark the item as played
+	
 	_, err = m.db.Exec(`
 		UPDATE queue_items 
 		SET played = 1 
@@ -491,7 +491,7 @@ func (m *Manager) RemoveQueueItem(guildID string, position int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// First get the queue ID
+	
 	var queueID int64
 	queryQueue := `SELECT id FROM queues WHERE guild_id = ?`
 	err := m.db.QueryRow(queryQueue, guildID).Scan(&queueID)
@@ -512,7 +512,7 @@ func (m *Manager) RemoveQueueItem(guildID string, position int) error {
 		}
 	}()
 
-	// Delete the item at the specified position
+	
 	result, err := tx.Exec(`
 		DELETE FROM queue_items 
 		WHERE queue_id = ? AND position = ? AND played = 0`,
@@ -521,7 +521,7 @@ func (m *Manager) RemoveQueueItem(guildID string, position int) error {
 		return fmt.Errorf("error removing queue item: %w", err)
 	}
 
-	// Check if any rows were affected
+	
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("error checking rows affected: %w", err)
@@ -531,7 +531,7 @@ func (m *Manager) RemoveQueueItem(guildID string, position int) error {
 		return fmt.Errorf("no item found at position %d", position)
 	}
 
-	// Decrement position for all items after the removed one
+	
 	_, err = tx.Exec(`
 		UPDATE queue_items 
 		SET position = position - 1 
@@ -552,7 +552,7 @@ func (m *Manager) ClearQueue(guildID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// First get the queue ID
+	
 	var queueID int64
 	queryQueue := `SELECT id FROM queues WHERE guild_id = ?`
 	err := m.db.QueryRow(queryQueue, guildID).Scan(&queueID)
@@ -563,7 +563,7 @@ func (m *Manager) ClearQueue(guildID string) error {
 		return fmt.Errorf("error querying queue: %w", err)
 	}
 
-	// Start a transaction to ensure consistency
+	
 	tx, err := m.db.Begin()
 	if err != nil {
 		return fmt.Errorf("error beginning transaction: %w", err)
@@ -574,13 +574,13 @@ func (m *Manager) ClearQueue(guildID string) error {
 		}
 	}()
 
-	// Delete ALL items (both played and unplayed)
+	
 	_, err = tx.Exec(`DELETE FROM queue_items WHERE queue_id = ?`, queueID)
 	if err != nil {
 		return fmt.Errorf("error clearing queue items: %w", err)
 	}
 
-	// Commit the transaction
+	
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("error committing transaction: %w", err)
 	}

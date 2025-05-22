@@ -183,7 +183,7 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 			}
 
 			track, err = c.client.DownloaderClient.DownloadPlaylistItem(url, idx, DefaultMaxDuration, DefaultMaxSize, false)
-			if err == nil && track != nil {
+			if err == nil {
 				break
 			}
 

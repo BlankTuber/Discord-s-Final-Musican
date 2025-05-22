@@ -40,7 +40,7 @@ func (t *Track) SetMetadata(duration int, filePath, artist, thumbnail string, is
 }
 
 func (t *Track) GetDurationString() string {
-	// Format duration as MM:SS
+	
 	minutes := t.Duration / 60
 	seconds := t.Duration % 60
 	return fmt.Sprintf("%d:%02d", minutes, seconds)

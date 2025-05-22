@@ -27,7 +27,7 @@ const (
 type Message struct {
 	Type      MessageType    `json:"type"`
 	Command   string         `json:"command"`
-	Event     string         `json:"event,omitempty"` // Add this field for events
+	Event     string         `json:"event,omitempty"` 
 	ID        string         `json:"id"`
 	Params    map[string]any `json:"params,omitempty"`
 	Data      map[string]any `json:"data,omitempty"`
@@ -398,9 +398,9 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 		return nil, fmt.Errorf("download error: %s", response.Error)
 	}
 
-	// Enhanced error handling for status errors
+	
 	if status, ok := response.Data["status"].(string); ok && status == "error" {
-		// Get the detailed error message
+		
 		var errorMsg string
 		if msg, ok := response.Data["message"].(string); ok && msg != "" {
 			errorMsg = msg
@@ -412,7 +412,7 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 		return nil, fmt.Errorf("%s", errorMsg)
 	}
 
-	// Check if we got a valid title and filename
+	
 	title, titleOk := response.Data["title"].(string)
 	filename, filenameOk := response.Data["filename"].(string)
 
@@ -424,7 +424,7 @@ func (c *Client) DownloadAudio(url string, maxDuration int, maxSize int, allowLi
 		return nil, fmt.Errorf("download failed: received invalid or missing file path")
 	}
 
-	// File existence check
+	
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		return nil, fmt.Errorf("download failed: file '%s' is missing", filename)
 	}
@@ -584,9 +584,9 @@ func (c *Client) DownloadPlaylistItem(url string, index int, maxDuration int, ma
 		return nil, fmt.Errorf("download error: %s", response.Error)
 	}
 
-	// Enhanced error handling for status errors
+	
 	if status, ok := response.Data["status"].(string); ok && status == "error" {
-		// Get the detailed error message
+		
 		var errorMsg string
 		if msg, ok := response.Data["message"].(string); ok && msg != "" {
 			errorMsg = msg
@@ -617,7 +617,7 @@ func (c *Client) DownloadPlaylistItem(url string, index int, maxDuration int, ma
 		return nil, fmt.Errorf("download failed: received invalid or missing file path")
 	}
 
-	// File existence check
+	
 	if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("download failed: file '%s' is missing", track.FilePath)
 	}

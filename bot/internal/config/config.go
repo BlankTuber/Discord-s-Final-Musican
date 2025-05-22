@@ -40,7 +40,7 @@ func Load(configPath string) (Config, error) {
 		return Config{}, err
 	}
 
-	// Validate required fields
+	
 	if config.DISCORD_TOKEN == "" {
 		return Config{}, errors.New("discord_token is required in config")
 	}
@@ -49,7 +49,7 @@ func Load(configPath string) (Config, error) {
 		return Config{}, errors.New("client_id is required in config")
 	}
 
-	// Set defaults for optional fields
+	
 	if config.VOLUME == 0 {
 		config.VOLUME = 0.5
 	}

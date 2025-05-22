@@ -189,7 +189,7 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 	})
 }
 
-// Helper function to disable buttons on a message
+
 func disableButtons(s *discordgo.Session, messageID, channelID string) {
 	logger.InfoLogger.Printf("Disabling buttons on message: %s", messageID)
 	emptyComponents := []discordgo.MessageComponent{}

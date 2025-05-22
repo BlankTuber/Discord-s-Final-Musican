@@ -73,7 +73,7 @@ func (m *Manager) AddTrack(guildID string, track *audio.Track) {
 		return
 	}
 
-	// Validate the track has required data
+	
 	if track.Title == "" {
 		logger.WarnLogger.Println("Attempted to add track with empty title to queue")
 		return
@@ -84,7 +84,7 @@ func (m *Manager) AddTrack(guildID string, track *audio.Track) {
 		return
 	}
 
-	// Verify file exists before adding to queue
+	
 	if _, err := os.Stat(track.FilePath); os.IsNotExist(err) {
 		logger.WarnLogger.Printf("Skipping track with missing file: %s", track.FilePath)
 		return
@@ -98,7 +98,7 @@ func (m *Manager) AddTrack(guildID string, track *audio.Track) {
 	m.queues[guildID] = append(m.queues[guildID], track)
 	m.mu.Unlock()
 
-	// Save the queue to the database
+	
 	if m.dbManager != nil {
 		go func() {
 			err := m.dbManager.SaveQueue(guildID, m.GetQueue(guildID))
@@ -124,7 +124,7 @@ func (m *Manager) AddTracks(guildID string, tracks []*audio.Track) int {
 
 	validTracks := make([]*audio.Track, 0, len(tracks))
 
-	// Verify files exist before adding to queue
+	
 	for _, track := range tracks {
 		if track == nil || track.FilePath == "" {
 			continue
@@ -150,7 +150,7 @@ func (m *Manager) AddTracks(guildID string, tracks []*audio.Track) int {
 	m.queues[guildID] = append(m.queues[guildID], validTracks...)
 	m.mu.Unlock()
 
-	// Save the queue to the database
+	
 	if m.dbManager != nil {
 		go func() {
 			err := m.dbManager.SaveQueue(guildID, m.GetQueue(guildID))
@@ -174,14 +174,14 @@ func (m *Manager) GetQueue(guildID string) []*audio.Track {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// If queue exists in memory, return a copy of it
+	
 	if queue, ok := m.queues[guildID]; ok {
 		result := make([]*audio.Track, len(queue))
 		copy(result, queue)
 		return result
 	}
 
-	// Otherwise return an empty queue
+	
 	return make([]*audio.Track, 0)
 }
 
@@ -204,7 +204,7 @@ func (m *Manager) GetNextTrack(guildID string) *audio.Track {
 		track := queue[0]
 		m.queues[guildID] = queue[1:]
 
-		// Save the updated queue to the database
+		
 		if m.dbManager != nil {
 			go func() {
 				err := m.dbManager.SaveQueue(guildID, m.queues[guildID])
@@ -244,7 +244,7 @@ func (m *Manager) RemoveTrack(guildID string, position int) (*audio.Track, error
 		track := queue[position]
 		m.queues[guildID] = append(queue[:position], queue[position+1:]...)
 
-		// Save the updated queue to the database
+		
 		if m.dbManager != nil {
 			go func() {
 				err := m.dbManager.SaveQueue(guildID, m.queues[guildID])
@@ -272,9 +272,9 @@ func (m *Manager) ClearQueue(guildID string) {
 	defer m.mu.Unlock()
 
 	m.queues[guildID] = make([]*audio.Track, 0)
-	delete(m.currentTracks, guildID) // Also clear the current track reference
+	delete(m.currentTracks, guildID) 
 
-	// Save the empty queue to the database
+	
 	if m.dbManager != nil {
 		go func() {
 			err := m.dbManager.ClearQueue(guildID)
@@ -294,12 +294,12 @@ func (m *Manager) GetCurrentTrack(guildID string) *audio.Track {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// First check in-memory track
+	
 	if track, ok := m.currentTracks[guildID]; ok {
 		return track
 	}
 
-	// Try to get from database with error handling
+	
 	if m.dbManager != nil {
 		track, err := m.dbManager.GetCurrentPlayingTrack(guildID)
 		if err != nil {
@@ -347,18 +347,18 @@ func (m *Manager) LoadQueueFromDatabase(guildID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Only load if queue is empty
+	
 	if queue, ok := m.queues[guildID]; ok && len(queue) > 0 {
 		return nil
 	}
 
-	// Load queue from database - only unplayed items
+	
 	queue, err := m.dbManager.GetQueue(guildID, false)
 	if err != nil {
 		return fmt.Errorf("error loading queue from database: %w", err)
 	}
 
-	// Filter out tracks with missing files
+	
 	validTracks := make([]*audio.Track, 0, len(queue))
 	for _, track := range queue {
 		if track.FilePath == "" {
@@ -382,7 +382,7 @@ func (m *Manager) GetHistory(guildID string, limit int) ([]*audio.Track, error) 
 		return nil, errors.New("database manager not available")
 	}
 
-	// For now, reuse the RecentTracks method
+	
 	return m.dbManager.GetRecentTracks(limit)
 }
 
@@ -399,7 +399,7 @@ func (m *Manager) MarkTrackAsPlayed(guildID string, track *audio.Track) {
 		return
 	}
 
-	// Find the track position
+	
 	var position int = -1
 	m.mu.RLock()
 	for i, t := range m.queues[guildID] {

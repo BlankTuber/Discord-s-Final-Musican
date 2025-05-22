@@ -22,11 +22,9 @@ func main() {
 	logLevel := flag.Int("logLevel", logger.LevelInfo, "Log level (0=Error, 1=Warning, 2=Info, 3=Debug)")
 	flag.Parse()
 
-	// Setup logger
 	logger.Setup(*logLevel)
 	logger.InfoLogger.Println("Discord Music Bot starting!")
 
-	// Call janitor executable
 	janitorPath := "../janitor/janitor"
 	logger.InfoLogger.Println("Running janitor...")
 	cmd := exec.Command(janitorPath)
@@ -37,28 +35,22 @@ func main() {
 		logger.InfoLogger.Println("Janitor completed successfully")
 	}
 
-	// Load configuration
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Create the Discord client
 	client, err := discord.NewClient(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
 
-	// Register commands
 	registerCommands(client)
 
-	// Register component handlers
 	registerComponentHandlers(client)
 
-	// Create shutdown manager
 	shutdownManager := discord.NewShutdownManager(client)
 
-	// Connect to Discord
 	logger.InfoLogger.Println("Connecting to Discord...")
 	if err := client.Connect(); err != nil {
 		log.Fatalf("Failed to connect client: %v", err)
@@ -66,16 +58,13 @@ func main() {
 
 	logger.InfoLogger.Println("Bot is now running. Press CTRL-C to exit.")
 
-	// Handle shutdown signals
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
 
-	// Create shutdown context
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Initiate graceful shutdown
 	logger.InfoLogger.Println("Shutting down...")
 	if err := shutdownManager.Shutdown(ctx); err != nil {
 		logger.ErrorLogger.Printf("Error during shutdown: %v", err)
@@ -85,7 +74,7 @@ func main() {
 }
 
 func registerCommands(client *discord.Client) {
-	// Register music commands
+
 	client.Router.RegisterCommand(commands.NewPlayCommand(client))
 	client.Router.RegisterCommand(commands.NewPlaylistCommand(client))
 	client.Router.RegisterCommand(commands.NewSearchCommand(client))
@@ -96,18 +85,15 @@ func registerCommands(client *discord.Client) {
 	client.Router.RegisterCommand(commands.NewStartCommand(client))
 	client.Router.RegisterCommand(commands.NewPauseCommand(client))
 
-	// Register radio commands
 	client.Router.RegisterCommand(commands.NewSetDefaultVCCommand(client))
 	client.Router.RegisterCommand(commands.NewRadioURLCommand(client))
 	client.Router.RegisterCommand(commands.NewRadioVolumeCommand(client))
 	client.Router.RegisterCommand(commands.NewRadioStartCommand(client))
 	client.Router.RegisterCommand(commands.NewRadioStopCommand(client))
 
-	// Register utility commands
 	client.Router.RegisterCommand(commands.NewPingCommand(client))
 	client.Router.RegisterCommand(commands.NewHelpCommand(client))
 
-	// Register moderation commands
 	client.Router.RegisterCommand(commands.NewClearCommand(client))
 	client.Router.RegisterCommand(commands.NewDisconnectUserCommand(client))
 	client.Router.RegisterCommand(commands.NewMuteUserCommand(client))
@@ -115,6 +101,6 @@ func registerCommands(client *discord.Client) {
 }
 
 func registerComponentHandlers(client *discord.Client) {
-	// Register search button handler
+
 	client.Router.RegisterComponentHandler(components.NewSearchButtonHandler(client))
 }

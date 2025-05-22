@@ -40,7 +40,7 @@ type Player struct {
 	state        PlayerState
 	currentTrack *Track
 	pausedTrack  *Track
-	pausedOffset int64 // Track position when paused
+	pausedOffset int64 
 }
 
 type PlayerEvent struct {
@@ -102,7 +102,7 @@ func (p *Player) PlayTrack(track *Track) {
 		return
 	}
 
-	// Stop any current playback
+	
 	p.Stop()
 
 	p.mu.Lock()
@@ -112,7 +112,7 @@ func (p *Player) PlayTrack(track *Track) {
 	p.state = StatePlaying
 	p.mu.Unlock()
 
-	// Fire event
+	
 	guildID := ""
 	if p.vc != nil {
 		guildID = p.vc.GuildID
@@ -126,7 +126,7 @@ func (p *Player) PlayTrack(track *Track) {
 		})
 	}
 
-	// Start playback in a goroutine
+	
 	go p.playTrackInternal(track)
 }
 
@@ -212,25 +212,25 @@ func (p *Player) playTrackInternal(track *Track) {
 	audioBuf := make([]int16, frameSize*channels)
 	opusBuffer := make([]byte, 1000)
 
-	// Start playback loop
+	
 	playing := true
 	paused := false
 	skipped := false
 
 	for playing {
-		// Check control flags
+		
 		p.mu.Lock()
 		paused = p.pauseFlag
 		skipped = p.skipFlag
 		p.mu.Unlock()
 
 		if paused {
-			// If we're paused, store current track and position
+			
 			p.mu.Lock()
 			p.state = StatePaused
 			p.mu.Unlock()
 
-			// Fire event
+			
 			for _, handler := range eventHandlers {
 				handler(PlayerEvent{
 					Type:    "track_pause",
@@ -240,17 +240,17 @@ func (p *Player) playTrackInternal(track *Track) {
 			}
 
 			logger.InfoLogger.Printf("Track paused: %s", track.Title)
-			return // IMPORTANT: Just return without firing track_end event
+			return 
 		}
 
 		if skipped {
-			// If we're skipping, stop playback
+			
 			playing = false
 			skipped = true
 			continue
 		}
 
-		// Read the next frame
+		
 		done := make(chan struct{})
 		var readErr error
 
@@ -274,7 +274,7 @@ func (p *Player) playTrackInternal(track *Track) {
 		case <-p.stopChan:
 			playing = false
 
-			// Check if we're paused or skipped
+			
 			p.mu.Lock()
 			paused = p.pauseFlag
 			skipped = p.skipFlag
@@ -287,7 +287,7 @@ func (p *Player) playTrackInternal(track *Track) {
 			continue
 		}
 
-		// Encode the audio frame
+		
 		opusData, err := encoder.Encode(audioBuf, frameSize, len(opusBuffer))
 		if err != nil {
 			logger.ErrorLogger.Printf("Error encoding to opus: %v", err)
@@ -295,7 +295,7 @@ func (p *Player) playTrackInternal(track *Track) {
 			continue
 		}
 
-		// Send the audio frame
+		
 		select {
 		case vc.OpusSend <- opusData:
 		case <-time.After(1 * time.Second):
@@ -304,7 +304,7 @@ func (p *Player) playTrackInternal(track *Track) {
 		case <-p.stopChan:
 			playing = false
 
-			// Check if we're paused or skipped
+			
 			p.mu.Lock()
 			paused = p.pauseFlag
 			skipped = p.skipFlag
@@ -312,28 +312,28 @@ func (p *Player) playTrackInternal(track *Track) {
 		}
 	}
 
-	// Calculate elapsed time
+	
 	elapsedTime := int(time.Since(startTime).Seconds())
 
-	// Fire the track end event
+	
 	p.fireTrackEndEvent(track, skipped, elapsedTime)
 }
 
 func (p *Player) fireTrackEndEvent(track *Track, skipped bool, elapsedTime int) {
 	p.mu.Lock()
 
-	// Only reset state if we're not paused
+	
 	if !p.pauseFlag {
 		p.state = StateStopped
 		p.currentTrack = nil
 		p.stream = nil
 	}
 
-	// Reset flags
+	
 	skippedFlag := p.skipFlag
 	p.skipFlag = false
 
-	// Get guild ID
+	
 	guildID := ""
 	if p.vc != nil {
 		guildID = p.vc.GuildID
@@ -341,7 +341,7 @@ func (p *Player) fireTrackEndEvent(track *Track, skipped bool, elapsedTime int) 
 
 	p.mu.Unlock()
 
-	// Fire the appropriate event
+	
 	eventType := "track_end"
 	if skippedFlag {
 		eventType = "track_skipped"
@@ -365,7 +365,7 @@ func (p *Player) Pause() {
 	}
 
 	p.pauseFlag = true
-	// Store current track for resuming later
+	
 	p.pausedTrack = p.currentTrack
 	p.state = StatePaused
 	p.mu.Unlock()
@@ -373,12 +373,12 @@ func (p *Player) Pause() {
 	select {
 	case p.stopChan <- true:
 	default:
-		// If channel is full, create a new one
+		
 		p.stopChan = make(chan bool, 1)
 		p.stopChan <- true
 	}
 
-	// Don't trigger track_end event - we're pausing, not ending
+	
 	logger.InfoLogger.Printf("Track paused: %s", p.pausedTrack.Title)
 }
 
@@ -396,10 +396,10 @@ func (p *Player) Resume() {
 	p.state = StatePlaying
 	p.mu.Unlock()
 
-	// Resume playback
+	
 	logger.InfoLogger.Printf("Resuming playback of: %s", track.Title)
 
-	// In a real implementation, we'd seek to the paused position
+	
 	go p.playTrackInternal(track)
 }
 
@@ -418,7 +418,7 @@ func (p *Player) Skip() {
 	select {
 	case p.stopChan <- true:
 	default:
-		// If channel is full, create a new one
+		
 		p.stopChan = make(chan bool, 1)
 		p.stopChan <- true
 	}
@@ -427,7 +427,7 @@ func (p *Player) Skip() {
 func (p *Player) Stop() {
 	p.mu.Lock()
 
-	// Only do something if we're playing or paused
+	
 	if p.state == StateStopped {
 		p.mu.Unlock()
 		return
@@ -439,16 +439,16 @@ func (p *Player) Stop() {
 	p.pausedTrack = nil
 	p.mu.Unlock()
 
-	// Signal the playback goroutine to stop
+	
 	select {
 	case p.stopChan <- true:
 	default:
-		// If channel is full, create a new one and signal
+		
 		p.stopChan = make(chan bool, 1)
 		p.stopChan <- true
 	}
 
-	// Wait a bit to ensure everything has stopped
+	
 	time.Sleep(100 * time.Millisecond)
 }
 

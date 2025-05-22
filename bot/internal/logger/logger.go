@@ -13,13 +13,13 @@ const (
 	LevelDebug
 )
 
-// ANSI color codes
+
 const (
 	ColorReset  = "\033[0m"
 	ColorRed    = "\033[31m"
 	ColorYellow = "\033[33m"
 	ColorGreen  = "\033[32m"
-	ColorBlue   = "\033[36m" // Cyan, easier to read than pure blue
+	ColorBlue   = "\033[36m" 
 	ColorPurple = "\033[35m"
 	ColorBold   = "\033[1m"
 )
@@ -30,21 +30,21 @@ var (
 	InfoLogger   *log.Logger
 	DebugLogger  *log.Logger
 	currentLevel = LevelInfo
-	useColors    = true // Can be toggled if needed
+	useColors    = true 
 )
 
-// Setup initializes the loggers with the specified level
+
 func Setup(level int) {
 	currentLevel = level
 
-	// Error logger - Red
+	
 	errorPrefix := "ERROR: "
 	if useColors {
 		errorPrefix = ColorRed + ColorBold + errorPrefix + ColorReset
 	}
 	ErrorLogger = log.New(os.Stderr, errorPrefix, log.Ldate|log.Ltime|log.Lshortfile)
 
-	// Warning logger - Yellow
+	
 	warningPrefix := "WARNING: "
 	if useColors {
 		warningPrefix = ColorYellow + warningPrefix + ColorReset
@@ -55,7 +55,7 @@ func Setup(level int) {
 		WarnLogger = log.New(io.Discard, "", 0)
 	}
 
-	// Info logger - Green
+	
 	infoPrefix := "INFO: "
 	if useColors {
 		infoPrefix = ColorGreen + infoPrefix + ColorReset
@@ -66,7 +66,7 @@ func Setup(level int) {
 		InfoLogger = log.New(io.Discard, "", 0)
 	}
 
-	// Debug logger - Cyan
+	
 	debugPrefix := "DEBUG: "
 	if useColors {
 		debugPrefix = ColorBlue + debugPrefix + ColorReset
@@ -78,7 +78,7 @@ func Setup(level int) {
 	}
 }
 
-// SetColors enables or disables color output
+
 func SetColors(enabled bool) {
 	if useColors != enabled {
 		useColors = enabled
@@ -86,12 +86,12 @@ func SetColors(enabled bool) {
 	}
 }
 
-// GetCurrentLevel returns the current logging level
+
 func GetCurrentLevel() int {
 	return currentLevel
 }
 
-// SetLevel changes the current logging level
+
 func SetLevel(newLevel int) {
 	currentLevel = newLevel
 	Setup(newLevel)

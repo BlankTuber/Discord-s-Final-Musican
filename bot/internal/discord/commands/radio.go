@@ -7,7 +7,7 @@ import (
 	"quidque.com/discord-musican/internal/discord"
 )
 
-// SetDefaultVCCommand handles the /setidlevc command
+
 type SetDefaultVCCommand struct {
 	client *discord.Client
 }
@@ -63,7 +63,7 @@ func (c *SetDefaultVCCommand) Execute(s *discordgo.Session, i *discordgo.Interac
 	})
 }
 
-// RadioURLCommand handles the /radiourl command
+
 type RadioURLCommand struct {
 	client *discord.Client
 }
@@ -112,7 +112,7 @@ func (c *RadioURLCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	})
 }
 
-// RadioVolumeCommand handles the /radiovolume command
+
 type RadioVolumeCommand struct {
 	client *discord.Client
 }
@@ -163,7 +163,7 @@ func (c *RadioVolumeCommand) Execute(s *discordgo.Session, i *discordgo.Interact
 	})
 }
 
-// RadioStartCommand handles the /radiostart command
+
 type RadioStartCommand struct {
 	client *discord.Client
 }
@@ -199,18 +199,18 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 
-	// Check if user is in the default idle VC
+	
 	c.client.Mu.RLock()
 	isInIdleVC := (channelID == c.client.DefaultVCID && i.GuildID == c.client.DefaultGuildID)
 	c.client.Mu.RUnlock()
 
-	// Always disable idle mode when manually starting radio
+	
 	c.client.DisableIdleMode()
 
-	// Stop any currently playing audio
+	
 	c.client.VoiceManager.StopAllPlayback()
 
-	// Check if already connected to the right channel
+	
 	if !c.client.VoiceManager.IsConnectedToChannel(i.GuildID, channelID) {
 		err = c.client.RobustJoinVoiceChannel(i.GuildID, channelID)
 		if err != nil {
@@ -221,12 +221,12 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		}
 	}
 
-	// Set idle mode flag based on the channel
+	
 	c.client.Mu.Lock()
 	c.client.IsInIdleMode = isInIdleVC
 	c.client.Mu.Unlock()
 
-	// Start radio in the current channel instead of using the default radio.Start()
+	
 	c.client.RadioManager.StartInChannel(i.GuildID, channelID)
 
 	s.UpdateGameStatus(0, "Radio Mode | Use /help")
@@ -242,7 +242,7 @@ func (c *RadioStartCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 	}
 }
 
-// RadioStopCommand handles the /radiostop command
+
 type RadioStopCommand struct {
 	client *discord.Client
 }
@@ -281,7 +281,7 @@ func (c *RadioStopCommand) Execute(s *discordgo.Session, i *discordgo.Interactio
 		return
 	}
 
-	// Disable idle mode when radio is manually stopped
+	
 	c.client.DisableIdleMode()
 
 	c.client.RadioManager.Stop()

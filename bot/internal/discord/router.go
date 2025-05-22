@@ -123,7 +123,7 @@ func (r *CommandRouter) handleCommandInteraction(s *discordgo.Session, i *discor
 		return
 	}
 
-	// Check permissions if the command implements PermissionedCommand
+	
 	if permCmd, ok := cmd.(PermissionedCommand); ok {
 		requiredPerms := permCmd.RequiredPermissions()
 		if requiredPerms > 0 && i.Member != nil && i.Member.User != nil {

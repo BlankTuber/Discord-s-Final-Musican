@@ -15,7 +15,7 @@ var (
 	channelLocksMutex sync.Mutex
 )
 
-// ClearCommand handles the /clear command to delete messages
+
 type ClearCommand struct {
 	client *discord.Client
 }
@@ -58,26 +58,26 @@ func (c *ClearCommand) RequiredPermissions() int64 {
 }
 
 func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Check if the channel is already being processed
+	
 	channelLocksMutex.Lock()
 	if locked, exists := channelLocks[i.ChannelID]; exists && locked {
 		channelLocksMutex.Unlock()
-		// Another clear command is already in progress
+		
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
 				Content: "⚠️ A clear operation is already in progress in this channel. Please wait until it completes.",
-				Flags:   discordgo.MessageFlagsEphemeral, // Make the message only visible to the user
+				Flags:   discordgo.MessageFlagsEphemeral, 
 			},
 		})
 		return
 	}
 
-	// Lock the channel
+	
 	channelLocks[i.ChannelID] = true
 	channelLocksMutex.Unlock()
 
-	// Make sure we unlock the channel when done
+	
 	defer func() {
 		channelLocksMutex.Lock()
 		delete(channelLocks, i.ChannelID)
@@ -96,8 +96,8 @@ func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		targetUser = options[1].UserValue(s).ID
 	}
 
-	// Get messages to delete
-	messages, err := s.ChannelMessages(i.ChannelID, count+1, "", "", i.ID) // +1 to include command message
+	
+	messages, err := s.ChannelMessages(i.ChannelID, count+1, "", "", i.ID) 
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr(fmt.Sprintf("❌ Error fetching messages: %s", err.Error())),
@@ -105,19 +105,19 @@ func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	// Filter messages if a user is specified
+	
 	messagesToDelete := make([]string, 0, len(messages))
 	oldMessages := make([]string, 0)
 
 	twoWeeksAgo := time.Now().Add(-14 * 24 * time.Hour)
 
 	for _, msg := range messages {
-		// Skip if we're filtering by user and this isn't that user
+		
 		if targetUser != "" && msg.Author.ID != targetUser {
 			continue
 		}
 
-		// Check if message is older than 2 weeks
+		
 		createdAt, err := discordgo.SnowflakeTimestamp(msg.ID)
 		if err == nil && createdAt.Before(twoWeeksAgo) {
 			oldMessages = append(oldMessages, msg.ID)
@@ -125,13 +125,13 @@ func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 			messagesToDelete = append(messagesToDelete, msg.ID)
 		}
 
-		// Don't exceed our target count
+		
 		if len(messagesToDelete)+len(oldMessages) >= count {
 			break
 		}
 	}
 
-	// Delete messages in bulk if possible
+	
 	deletedCount := 0
 	if len(messagesToDelete) > 0 {
 		err = s.ChannelMessagesBulkDelete(i.ChannelID, messagesToDelete)
@@ -142,7 +142,7 @@ func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		}
 	}
 
-	// Delete old messages individually
+	
 	for _, msgID := range oldMessages {
 		err = s.ChannelMessageDelete(i.ChannelID, msgID)
 		if err != nil {
@@ -151,25 +151,25 @@ func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 			deletedCount++
 		}
 
-		// Wait a bit to avoid rate limits for individual deletes
+		
 		if len(oldMessages) > 5 {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
 
-	// Send response
+	
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(fmt.Sprintf("✅ Successfully deleted %d messages.", deletedCount)),
 	})
 
-	// Auto-delete our response after 5 seconds
+	
 	go func() {
 		time.Sleep(5 * time.Second)
 		s.InteractionResponseDelete(i.Interaction)
 	}()
 }
 
-// DisconnectUserCommand handles the /disconnect command
+
 type DisconnectUserCommand struct {
 	client *discord.Client
 }
@@ -224,7 +224,7 @@ func (c *DisconnectUserCommand) Execute(s *discordgo.Session, i *discordgo.Inter
 		reason = "No reason provided"
 	}
 
-	// Check if user is in a voice channel
+	
 	voiceState, err := s.State.VoiceState(i.GuildID, targetUser.ID)
 	if err != nil || voiceState == nil || voiceState.ChannelID == "" {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -233,7 +233,7 @@ func (c *DisconnectUserCommand) Execute(s *discordgo.Session, i *discordgo.Inter
 		return
 	}
 
-	// Move user to no channel (disconnect)
+	
 	err = s.GuildMemberMove(i.GuildID, targetUser.ID, nil)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -248,7 +248,7 @@ func (c *DisconnectUserCommand) Execute(s *discordgo.Session, i *discordgo.Inter
 	})
 }
 
-// MuteUserCommand handles the /mute command
+
 type MuteUserCommand struct {
 	client *discord.Client
 }
@@ -310,7 +310,7 @@ func (c *MuteUserCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		reason = "No reason provided"
 	}
 
-	// Check if user is in a voice channel
+	
 	voiceState, err := s.State.VoiceState(i.GuildID, targetUser.ID)
 	if err != nil || voiceState == nil || voiceState.ChannelID == "" {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -319,7 +319,7 @@ func (c *MuteUserCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 
-	// Set mute state
+	
 	err = s.GuildMemberMute(i.GuildID, targetUser.ID, muteState)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -339,7 +339,7 @@ func (c *MuteUserCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	})
 }
 
-// DeafenUserCommand handles the /deafen command
+
 type DeafenUserCommand struct {
 	client *discord.Client
 }
@@ -401,7 +401,7 @@ func (c *DeafenUserCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		reason = "No reason provided"
 	}
 
-	// Check if user is in a voice channel
+	
 	voiceState, err := s.State.VoiceState(i.GuildID, targetUser.ID)
 	if err != nil || voiceState == nil || voiceState.ChannelID == "" {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -410,7 +410,7 @@ func (c *DeafenUserCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 
-	// Set deafen state
+	
 	err = s.GuildMemberDeafen(i.GuildID, targetUser.ID, deafenState)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -430,7 +430,7 @@ func (c *DeafenUserCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 	})
 }
 
-// Helper functions
+
 func muteStateString(state bool) string {
 	if state {
 		return "muted"
@@ -449,5 +449,5 @@ func capitalizeFirst(s string) string {
 	if len(s) == 0 {
 		return s
 	}
-	return fmt.Sprintf("%c%s", s[0]-32, s[1:]) // Simple ASCII capitalization
+	return fmt.Sprintf("%c%s", s[0]-32, s[1:]) 
 }

@@ -118,7 +118,7 @@ func (rm *RadioManager) StartInChannel(guildID, channelID string) {
 	go rm.streamInChannel(guildID, channelID)
 }
 
-// streamInChannel streams audio to a specific channel
+
 func (rm *RadioManager) streamInChannel(guildID, channelID string) {
 	for {
 		rm.mu.RLock()
@@ -130,7 +130,7 @@ func (rm *RadioManager) streamInChannel(guildID, channelID string) {
 			return
 		}
 
-		// Make sure we're connected to the specified channel
+		
 		if !rm.client.VoiceManager.IsConnectedToChannel(guildID, channelID) {
 			err := rm.client.RobustJoinVoiceChannel(guildID, channelID)
 			if err != nil {
@@ -140,7 +140,7 @@ func (rm *RadioManager) streamInChannel(guildID, channelID string) {
 			}
 		}
 
-		// Get the voice connection
+		
 		rm.client.VoiceManager.mu.RLock()
 		vc, exists := rm.client.VoiceManager.voiceConnections[guildID]
 		rm.client.VoiceManager.mu.RUnlock()
@@ -186,13 +186,13 @@ func (rm *RadioManager) streamLoop() {
 			return
 		}
 
-		// Get the voice connection from default guild and channel
+		
 		rm.client.Mu.RLock()
 		defaultGuildID := rm.client.DefaultGuildID
 		defaultVCID := rm.client.DefaultVCID
 		rm.client.Mu.RUnlock()
 
-		// Make sure we're connected to the default voice channel
+		
 		if !rm.client.VoiceManager.IsConnectedToChannel(defaultGuildID, defaultVCID) {
 			err := rm.client.RobustJoinVoiceChannel(defaultGuildID, defaultVCID)
 			if err != nil {
@@ -202,7 +202,7 @@ func (rm *RadioManager) streamLoop() {
 			}
 		}
 
-		// Get the voice connection
+		
 		rm.client.VoiceManager.mu.RLock()
 		vc, exists := rm.client.VoiceManager.voiceConnections[defaultGuildID]
 		rm.client.VoiceManager.mu.RUnlock()

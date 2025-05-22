@@ -112,7 +112,7 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	})
 }
 
-// QueueCommand handles the /queue command
+
 type QueueCommand struct {
 	client *discord.Client
 }
@@ -196,7 +196,7 @@ func (c *QueueCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 	})
 }
 
-// SkipCommand handles the /skip command
+
 type SkipCommand struct {
 	client *discord.Client
 }
@@ -247,7 +247,7 @@ func (c *SkipCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 }
 
-// NowPlayingCommand handles the /nowplaying command
+
 type NowPlayingCommand struct {
 	client *discord.Client
 }
@@ -275,7 +275,7 @@ func (c *NowPlayingCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 
-	// Check if radio is playing
+	
 	if c.client.RadioManager.IsPlaying() {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr(fmt.Sprintf("📻 **Now Playing: Radio Stream**\n🔊 Volume: %.0f%%\n🔗 Stream URL: %s",
@@ -330,7 +330,7 @@ func (c *NowPlayingCommand) Execute(s *discordgo.Session, i *discordgo.Interacti
 	}
 }
 
-// VolumeCommand handles the /volume command
+
 type VolumeCommand struct {
 	client *discord.Client
 }
@@ -476,7 +476,7 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 	})
 }
 
-// PauseCommand handles the /pause command
+
 type PauseCommand struct {
 	client *discord.Client
 }
@@ -507,7 +507,7 @@ func (c *PauseCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		},
 	})
 
-	// Check if radio is playing and pause it if so
+	
 	if c.client.RadioManager.IsPlaying() {
 		c.client.RadioManager.Pause()
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -525,7 +525,7 @@ func (c *PauseCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	// Store the current track in QueueManager to make it accessible by other commands
+	
 	currentPlayer := c.client.VoiceManager.GetPlayer(i.GuildID)
 	if currentPlayer != nil {
 		pausedTrack := currentPlayer.GetCurrentTrack()
@@ -539,7 +539,7 @@ func (c *PauseCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 	})
 }
 
-// SearchCommand handles the /search command
+
 type SearchCommand struct {
 	client *discord.Client
 }
@@ -596,7 +596,7 @@ func (c *SearchCommand) Options() []*discordgo.ApplicationCommandOption {
 }
 
 func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Use ephemeral response (only visible to the command user)
+	
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
@@ -673,7 +673,7 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 
 	sessionID := fmt.Sprintf("search:%s:%s", guildID, userID)
 
-	// Store the search results in the cache
+	
 	c.client.Mu.Lock()
 	c.client.SearchResultsCache[sessionID] = tracks
 	c.client.Mu.Unlock()
@@ -718,7 +718,7 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 
 	messageContent := sb.String()
 
-	// Try to edit the message with content and components
+	
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content:    stringPtr(messageContent),
 		Components: &components,
@@ -727,7 +727,7 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 	if err != nil {
 		logger.ErrorLogger.Printf("Error updating search results: %v", err)
 
-		// Fallback approach: just send the content without components
+		
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr(messageContent + "\n\n❌ Error displaying buttons. Please try again or use /play command directly."),
 		})

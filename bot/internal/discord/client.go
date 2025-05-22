@@ -75,20 +75,20 @@ func NewClient(cfg config.Config) (*Client, error) {
 		stopChan:           make(chan struct{}),
 	}
 
-	// Initialize the Discord session
+	
 	session, err := discordgo.New("Bot " + cfg.DISCORD_TOKEN)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Discord session: %w", err)
 	}
 	client.Session = session
 
-	// Initialize the downloader client
+	
 	client.DownloaderClient = downloader.NewClient(cfg.UDS_PATH)
 
-	// Initialize the command router
+	
 	client.Router = NewCommandRouter(client)
 
-	// Initialize the database manager
+	
 	dbManager, err := database.NewManager(cfg.DB_PATH)
 	if err != nil {
 		logger.WarnLogger.Printf("Failed to connect to database: %v", err)
@@ -98,17 +98,17 @@ func NewClient(cfg config.Config) (*Client, error) {
 		client.DBManager = dbManager
 	}
 
-	// Initialize the queue manager
+	
 	client.QueueManager = queue.NewManager(client.DBManager)
 	client.QueueManager.SetEventCallback(client.handleQueueEvent)
 
-	// Initialize the voice manager
+	
 	client.VoiceManager = NewVoiceManager(client)
 
-	// Initialize the radio manager
+	
 	client.RadioManager = NewRadioManager(client, cfg.RADIO_URL, cfg.VOLUME)
 
-	// Setup handlers
+	
 	session.AddHandler(client.handleReady)
 	session.AddHandler(client.handleVoiceStateUpdate)
 	session.AddHandler(client.handleInteraction)
@@ -120,11 +120,11 @@ func NewClient(cfg config.Config) (*Client, error) {
 	return client, nil
 }
 
-// Downloader client will handle events from the downloader service
+
 func (c *Client) handleDownloaderEvent(eventType string, data map[string]any) {
 	switch eventType {
 	case "playlist_item_downloaded":
-		// When a playlist item is downloaded, add it to the queue
+		
 		if trackData, ok := data["track"].(map[string]any); ok {
 			guildID, _ := data["guild_id"].(string)
 			if guildID == "" {
@@ -267,13 +267,13 @@ func (c *Client) RobustJoinVoiceChannel(guildID, channelID string) error {
 }
 
 func (c *Client) Connect() error {
-	// Connect to Discord
+	
 	err := c.Session.Open()
 	if err != nil {
 		return fmt.Errorf("failed to connect to Discord: %w", err)
 	}
 
-	// Connect to the downloader service
+	
 	err = c.DownloaderClient.Connect()
 	if err != nil {
 		logger.WarnLogger.Printf("Failed to connect to downloader service: %v", err)
@@ -281,20 +281,20 @@ func (c *Client) Connect() error {
 	} else {
 		logger.InfoLogger.Println("Successfully connected to downloader service")
 
-		// Set up event handling from downloader
+		
 		c.DownloaderClient.SetEventCallback(c.handleDownloaderEvent)
 	}
 
-	// Start the idle checker
+	
 	c.startIdleChecker()
 
-	// Refresh slash commands
+	
 	err = c.Router.RefreshSlashCommands()
 	if err != nil {
 		logger.ErrorLogger.Printf("Failed to refresh slash commands: %v", err)
 	}
 
-	// Schedule idle mode startup
+	
 	go func() {
 		logger.InfoLogger.Println("Scheduling idle mode startup in 3 seconds...")
 		time.Sleep(3 * time.Second)
@@ -305,35 +305,35 @@ func (c *Client) Connect() error {
 }
 
 func (c *Client) Disconnect() error {
-	// Stop the idle checker
+	
 	if c.IdleCheckTicker != nil {
 		c.IdleCheckTicker.Stop()
 	}
 
-	// Stop the radio
+	
 	c.RadioManager.Stop()
 
-	// Close the stop channel
+	
 	close(c.stopChan)
 
-	// Disconnect from all voice channels
+	
 	c.VoiceManager.DisconnectAll()
 
-	// Close the database connection
+	
 	if c.DBManager != nil {
 		if err := c.DBManager.Close(); err != nil {
 			logger.ErrorLogger.Printf("Error closing database: %v", err)
 		}
 	}
 
-	// Disconnect from the downloader service
+	
 	if c.DownloaderClient != nil {
 		if err := c.DownloaderClient.Disconnect(); err != nil {
 			logger.ErrorLogger.Printf("Error disconnecting from downloader service: %v", err)
 		}
 	}
 
-	// Close the Discord session
+	
 	return c.Session.Close()
 }
 
@@ -702,21 +702,21 @@ func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 		sm.client.RadioManager.Stop()
 	}
 
-	// Use waitgroup for synchronization
+	
 	sm.wg.Add(1)
 	go func() {
 		defer sm.wg.Done()
 		sm.client.VoiceManager.StopAllPlayback()
 	}()
 
-	// Disconnect voice channels
+	
 	sm.wg.Add(1)
 	go func() {
 		defer sm.wg.Done()
 		sm.client.VoiceManager.DisconnectAll()
 	}()
 
-	// Wait for cleanup with timeout
+	
 	done := make(chan struct{})
 	go func() {
 		sm.wg.Wait()
@@ -731,21 +731,21 @@ func (sm *ShutdownManager) Shutdown(ctx context.Context) error {
 		logger.InfoLogger.Println("All components shut down successfully")
 	}
 
-	// Close DB and Discord session
+	
 	if sm.client.DBManager != nil {
 		if err := sm.client.DBManager.Close(); err != nil {
 			logger.ErrorLogger.Printf("Error closing database: %v", err)
 		}
 	}
 
-	// Disconnect from downloader service
+	
 	if sm.client.DownloaderClient != nil {
 		if err := sm.client.DownloaderClient.Disconnect(); err != nil {
 			logger.ErrorLogger.Printf("Error disconnecting from downloader: %v", err)
 		}
 	}
 
-	// Close Discord session
+	
 	err := sm.client.Session.Close()
 	if err != nil {
 		logger.ErrorLogger.Printf("Error closing Discord session: %v", err)

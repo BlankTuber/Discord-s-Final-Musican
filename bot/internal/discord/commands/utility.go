@@ -9,7 +9,7 @@ import (
 	"quidque.com/discord-musican/internal/logger"
 )
 
-// PingCommand handles the /ping command
+
 type PingCommand struct {
 	client *discord.Client
 }
@@ -46,7 +46,7 @@ func (c *PingCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 
 	heartbeat := s.HeartbeatLatency().Milliseconds()
 
-	// Check downloader connection status
+	
 	downloaderStatus := "❌ Disconnected"
 	if c.client.DownloaderClient.IsConnected() {
 		pingStart := time.Now()
@@ -59,7 +59,7 @@ func (c *PingCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		}
 	}
 
-	// Count active voice connections
+	
 	voiceStatus := "❌ Not connected"
 	connectedChannels := c.client.VoiceManager.GetConnectedChannels()
 	if len(connectedChannels) > 0 {
@@ -80,7 +80,7 @@ func (c *PingCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	logger.InfoLogger.Printf("Ping command executed - API: %dms, Gateway: %dms", latency, heartbeat)
 }
 
-// HelpCommand handles the /help command
+
 type HelpCommand struct {
 	client *discord.Client
 }
@@ -108,7 +108,7 @@ func (c *HelpCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
 
-	// Build the help message
+	
 	var response string
 
 	response = "🎵 **Discord Music Bot Help**\n\n"
