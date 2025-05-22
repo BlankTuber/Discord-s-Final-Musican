@@ -405,18 +405,44 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 	// Aggressively disable idle mode first thing
 	c.client.DisableIdleMode()
 
-	// Check if we have a paused player first (simplest case)
+	// Check if user is in a voice channel
+	channelID, err := c.client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
+	if err != nil {
+		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ You need to be in a voice channel to use this command."),
+		})
+		return
+	}
+
+	// Stop radio if it's playing
+	if c.client.RadioManager.IsPlaying() {
+		c.client.RadioManager.Stop()
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Check if we have a paused player first
 	playerState := c.client.VoiceManager.GetPlayerState(i.GuildID)
 	if playerState == audio.StatePaused {
+		// Make sure we're in the same channel as the user before resuming
+		if !c.client.VoiceManager.IsConnectedToChannel(i.GuildID, channelID) {
+			// Move to user's channel first
+			err = c.client.RobustJoinVoiceChannel(i.GuildID, channelID)
+			if err != nil {
+				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+					Content: stringPtr(fmt.Sprintf("❌ Failed to join your voice channel: %v", err)),
+				})
+				return
+			}
+		}
+
 		logger.InfoLogger.Printf("Found paused player, attempting to resume")
 		success := c.client.VoiceManager.ResumePlayback(i.GuildID)
 		if success {
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 				Content: stringPtr("▶️ Playback resumed!"),
 			})
-			return // Important: Return here after successfully resuming
+			return
 		}
-		// If resume fails, we'll try to restart playback from queue below
 	}
 
 	// Check for current track and queue
@@ -438,27 +464,11 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	// Check if user is in a voice channel
-	channelID, err := c.client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
-	if err != nil {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ You need to be in a voice channel to use this command."),
-		})
-		return
-	}
-
-	// First make sure we're not in radio mode
-	if c.client.RadioManager.IsPlaying() {
-		c.client.RadioManager.Stop()
-		time.Sleep(500 * time.Millisecond) // Give some time for radio to stop
-	}
-
-	// Now attempt to join the voice channel
+	// Join the user's voice channel
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr("🔄 Joining voice channel and preparing playback..."),
 	})
 
-	// Try to join the voice channel
 	err = c.client.JoinVoiceChannel(i.GuildID, channelID)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -514,7 +524,7 @@ func (c *StartCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 	})
 
 	c.client.VoiceManager.StopAllPlayback()
-	time.Sleep(800 * time.Millisecond) // Longer wait to ensure stop completes
+	time.Sleep(800 * time.Millisecond)
 
 	// Clear existing queue and rebuild with our tracks
 	c.client.QueueManager.ClearQueue(i.GuildID)

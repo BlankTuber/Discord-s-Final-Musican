@@ -69,6 +69,12 @@ func NewPlayer(vc *discordgo.VoiceConnection) *Player {
 	}
 }
 
+func (p *Player) SetVoiceConnection(vc *discordgo.VoiceConnection) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.vc = vc
+}
+
 func (p *Player) SetVolume(volume float32) {
 	if volume < 0 || volume > 1 {
 		return

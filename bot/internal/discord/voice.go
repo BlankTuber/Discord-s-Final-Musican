@@ -359,10 +359,22 @@ func (vm *VoiceManager) ResumePlayback(guildID string) bool {
 	defer vm.mu.Unlock()
 
 	player, exists := vm.players[guildID]
-	if !exists || player == nil || player.GetState() != audio.StatePaused {
+	if !exists || player == nil {
 		return false
 	}
 
+	// Check if we have a voice connection
+	vc, vcExists := vm.voiceConnections[guildID]
+	if !vcExists || vc == nil {
+		return false
+	}
+
+	if player.GetState() != audio.StatePaused {
+		return false
+	}
+
+	// Update the player's voice connection in case we moved channels
+	player.SetVoiceConnection(vc)
 	player.Resume()
 	vm.playbackStatus[guildID] = audio.StatePlaying
 

@@ -728,16 +728,17 @@ func (c *Client) handleVoiceStateUpdate(s *discordgo.Session, v *discordgo.Voice
 		// Check if the bot is alone in a voice channel
 		for guildID, channelID := range c.VoiceManager.GetConnectedChannels() {
 			if c.checkChannelEmpty(guildID, channelID) {
-				logger.InfoLogger.Println("Bot is alone in voice channel, checking if should move to idle channel")
+				logger.InfoLogger.Println("Bot is alone in voice channel")
 
 				// Check if there is any active playback or queued tracks
 				queueLength := c.QueueManager.GetQueueLength(guildID)
 				playerState := c.VoiceManager.GetPlayerState(guildID)
 
-				// Don't enter idle mode if there's active playback or queued tracks
-				if queueLength > 0 || playerState == audio.StatePlaying || playerState == audio.StatePaused {
-					logger.InfoLogger.Println("Active playback or queued tracks, not entering idle mode")
-					continue
+				// If there's active playback or queued tracks, stop playback when everyone leaves
+				if playerState == audio.StatePlaying || playerState == audio.StatePaused || queueLength > 0 {
+					logger.InfoLogger.Println("Stopping playback because bot is alone")
+					c.VoiceManager.StopAllPlayback()
+					c.Session.UpdateGameStatus(0, "Queue is empty | Use /play")
 				}
 
 				c.Mu.Lock()

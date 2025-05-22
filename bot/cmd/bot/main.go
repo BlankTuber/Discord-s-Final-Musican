@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -24,6 +25,17 @@ func main() {
 	// Setup logger
 	logger.Setup(*logLevel)
 	logger.InfoLogger.Println("Discord Music Bot starting!")
+
+	// Call janitor executable
+	janitorPath := "../janitor/janitor"
+	logger.InfoLogger.Println("Running janitor...")
+	cmd := exec.Command(janitorPath)
+	err := cmd.Run()
+	if err != nil {
+		logger.WarnLogger.Printf("Failed to run janitor: %v", err)
+	} else {
+		logger.InfoLogger.Println("Janitor completed successfully")
+	}
 
 	// Load configuration
 	cfg, err := config.Load(*configPath)
