@@ -71,7 +71,6 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		maxItems = int(options[1].IntValue())
 	}
 
-	// Verify user is in a voice channel first (but don't join yet)
 	channelID, err := c.client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
 	if err != nil {
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -80,7 +79,6 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 
-	// Disable idle mode completely before downloading
 	c.client.DisableIdleMode()
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -89,10 +87,8 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 
 	logger.InfoLogger.Printf("Getting playlist info for URL: %s", url)
 
-	// First, get basic playlist info to know what we're dealing with
 	playlistTitle, totalTracks, err := c.client.DownloaderClient.GetPlaylistInfo(url, maxItems)
 	if err != nil {
-		// Try as a single track if playlist info fails
 		logger.InfoLogger.Printf("Failed to get playlist info, trying as single track: %v", err)
 
 		track, singleErr := c.client.DownloaderClient.DownloadAudio(url, DefaultMaxDuration, DefaultMaxSize, false)
@@ -100,11 +96,11 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 			track.Requester = i.Member.User.Username
 			track.RequestedAt = time.Now().Unix()
 
-			// Now that we have downloaded successfully, join the voice channel
 			err = c.client.RobustJoinVoiceChannel(i.GuildID, channelID)
 			if err != nil {
+				c.client.QueueManager.AddTrack(i.GuildID, track)
 				s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-					Content: stringPtr("❌ Failed to join voice channel: " + err.Error()),
+					Content: stringPtr(fmt.Sprintf("⚠️ Added **%s** to queue but couldn't join voice. Use /start to begin playback.", track.Title)),
 				})
 				return
 			}
@@ -130,19 +126,16 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return
 	}
 
-	// Update the message with initial info
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(fmt.Sprintf("⏳ Processing **%s**\nFound %d tracks, downloading...", playlistTitle, totalTracks)),
 	})
 
-	// Start downloading the playlist items incrementally
 	var successCount int
 	var failCount int
 	var mu sync.Mutex
 	var firstTrackAdded bool = false
-	var playbackStarted bool = false
+	var joinedVC bool = false
 
-	// Start a goroutine to update the message periodically
 	stopUpdates := make(chan struct{})
 	defer close(stopUpdates)
 
@@ -156,15 +149,15 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 				mu.Lock()
 				current := successCount
 				failed := failCount
+				joined := joinedVC
 				mu.Unlock()
 
 				if current+failed > 0 {
 					progress := fmt.Sprintf("⏳ Downloading **%s**\nProgress: %d/%d tracks downloaded (%d failed)",
 						playlistTitle, current, totalTracks, failed)
 
-					// Add note that playback has started if applicable
-					if playbackStarted {
-						progress += "\n\n▶️ Playback has started with the first track while downloading continues."
+					if joined && current > 0 {
+						progress += "\n\n▶️ Playback has started while downloading continues."
 					}
 
 					s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -177,35 +170,27 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		}
 	}()
 
-	// Process each track individually
 	failedTracks := make([]string, 0)
 
 	for idx := 0; idx < totalTracks; idx++ {
 		var track interface{} = nil
 		var err error
 
-		// Try up to MaxRetryAttempts times
 		for attempt := 0; attempt < MaxRetryAttempts; attempt++ {
-			// Add a small delay between retries to prevent rate limiting
 			if attempt > 0 {
 				time.Sleep(time.Duration(attempt) * time.Second)
 				logger.InfoLogger.Printf("Retry attempt %d for track %d", attempt+1, idx+1)
 			}
 
-			// Download the track
 			track, err = c.client.DownloaderClient.DownloadPlaylistItem(url, idx, DefaultMaxDuration, DefaultMaxSize, false)
-			if err != nil {
-				// Log the error but continue with retries
-				logger.ErrorLogger.Printf("Attempt %d: Failed to download playlist item %d: %v",
-					attempt+1, idx+1, err)
-				continue
+			if err == nil && track != nil {
+				break
 			}
 
-			// Success, break out of retry loop
-			break
+			logger.ErrorLogger.Printf("Attempt %d: Failed to download playlist item %d: %v",
+				attempt+1, idx+1, err)
 		}
 
-		// Check if all attempts failed
 		if err != nil || track == nil {
 			mu.Lock()
 			failCount++
@@ -215,7 +200,6 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 			continue
 		}
 
-		// Convert the interface to the correct type
 		audioTrack, ok := track.(*audio.Track)
 		if !ok || audioTrack.FilePath == "" || !fileExists(audioTrack.FilePath) {
 			mu.Lock()
@@ -226,7 +210,6 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 			continue
 		}
 
-		// Set track metadata
 		audioTrack.Requester = i.Member.User.Username
 		audioTrack.RequestedAt = time.Now().Unix()
 
@@ -236,47 +219,36 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		successCount++
 		mu.Unlock()
 
-		// If this is the first successful track, join voice channel and start playback
-		if firstTrack {
-			// Double-check user is still in the voice channel
+		if firstTrack && !joinedVC {
 			newChannelID, vcErr := c.client.GetUserVoiceChannel(i.GuildID, i.Member.User.ID)
 			if vcErr == nil {
-				channelID = newChannelID // Update channel ID if user moved
+				channelID = newChannelID
 			}
 
-			// Force disable idle mode again before joining VC
 			c.client.DisableIdleMode()
 
-			// Join VC for the first track
 			err = c.client.RobustJoinVoiceChannel(i.GuildID, channelID)
 			if err != nil {
 				logger.ErrorLogger.Printf("Failed to join voice channel for playlist: %v", err)
-				// Don't return - we'll still add tracks to queue
 			} else {
-				// Everything is set up - add the track and flag that we've started playback
-				c.client.QueueManager.AddTrack(i.GuildID, audioTrack)
-
 				mu.Lock()
-				playbackStarted = true
+				joinedVC = true
 				mu.Unlock()
-
-				logger.InfoLogger.Printf("Started playback with first track: %s", audioTrack.Title)
-
-				// Update status to show we're playing music not radio
-				c.client.Session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", audioTrack.Title))
-				continue // Skip the AddTrack below since we already added it
+				time.Sleep(300 * time.Millisecond)
 			}
 		}
 
-		// Add subsequent tracks directly to queue
 		c.client.QueueManager.AddTrack(i.GuildID, audioTrack)
 	}
 
-	// Send final message
 	finalMessage := ""
 	if successCount > 0 {
 		finalMessage = fmt.Sprintf("✅ Added %d/%d tracks from **%s** to the queue!",
 			successCount, totalTracks, playlistTitle)
+
+		if !joinedVC {
+			finalMessage += "\n\n⚠️ Couldn't join voice channel. Use /start to begin playback."
+		}
 	} else {
 		finalMessage = fmt.Sprintf("❌ Failed to download any tracks from **%s**!", playlistTitle)
 	}

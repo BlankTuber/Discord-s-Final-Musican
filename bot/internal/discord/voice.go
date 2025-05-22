@@ -50,20 +50,20 @@ func (vm *VoiceManager) JoinChannel(guildID, channelID string) error {
 
 	vm.client.StartActivity()
 
-	// Save channel ID even before we try to join (in case of failure)
 	vm.lastKnownChannels[guildID] = channelID
 
-	if vc, ok := vm.voiceConnections[guildID]; ok {
+	if vc, ok := vm.voiceConnections[guildID]; ok && vc != nil {
 		if vc.ChannelID == channelID {
 			return nil
 		}
 
-		// Stop any audio playing in the current voice channel
 		if player, exists := vm.players[guildID]; exists && player != nil {
 			player.Stop()
 		}
 
 		vc.Disconnect()
+		delete(vm.voiceConnections, guildID)
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	vc, err := vm.client.Session.ChannelVoiceJoin(guildID, channelID, false, true)
@@ -73,6 +73,8 @@ func (vm *VoiceManager) JoinChannel(guildID, channelID string) error {
 
 	vm.voiceConnections[guildID] = vc
 	vm.playbackStatus[guildID] = audio.StateStopped
+
+	time.Sleep(100 * time.Millisecond)
 
 	return nil
 }
@@ -168,20 +170,25 @@ func (vm *VoiceManager) GetConnectedChannels() map[string]string {
 
 func (vm *VoiceManager) StopAllPlayback() {
 	vm.mu.Lock()
-	defer vm.mu.Unlock()
 
 	logger.InfoLogger.Println("Stopping all audio playback")
 
-	for _, player := range vm.players {
+	playersCopy := make(map[string]*audio.Player)
+	for k, v := range vm.players {
+		playersCopy[k] = v
+	}
+
+	vm.mu.Unlock()
+
+	for guildID, player := range playersCopy {
 		if player != nil {
 			player.Stop()
 		}
-	}
 
-	vm.players = make(map[string]*audio.Player)
-
-	for guildID := range vm.playbackStatus {
+		vm.mu.Lock()
+		delete(vm.players, guildID)
 		vm.playbackStatus[guildID] = audio.StateStopped
+		vm.mu.Unlock()
 	}
 }
 
@@ -203,10 +210,9 @@ func (vm *VoiceManager) HandleDisconnect(guildID string) {
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
-	// Cleanup on disconnect
 	delete(vm.voiceConnections, guildID)
 
-	if player, exists := vm.players[guildID]; exists {
+	if player, exists := vm.players[guildID]; exists && player != nil {
 		player.Stop()
 		delete(vm.players, guildID)
 	}
@@ -230,7 +236,6 @@ func (vm *VoiceManager) StartPlayingFromQueue(guildID string) {
 
 	vm.mu.Lock()
 
-	// Make sure we have a voice connection
 	vc, ok := vm.voiceConnections[guildID]
 	if !ok || vc == nil {
 		vm.mu.Unlock()
@@ -238,18 +243,21 @@ func (vm *VoiceManager) StartPlayingFromQueue(guildID string) {
 		return
 	}
 
-	// Check if we already have a player
-	if player, exists := vm.players[guildID]; exists && player != nil &&
-		(player.GetState() == audio.StatePlaying || player.GetState() == audio.StatePaused) {
-		vm.mu.Unlock()
-		logger.InfoLogger.Printf("Player already active in guild %s", guildID)
-		return
+	if player, exists := vm.players[guildID]; exists && player != nil {
+		state := player.GetState()
+		if state == audio.StatePlaying || state == audio.StatePaused {
+			vm.mu.Unlock()
+			logger.InfoLogger.Printf("Player already active in guild %s with state %s", guildID, state)
+			return
+		}
+		player.Stop()
+		delete(vm.players, guildID)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	volume := vm.currentVolume
 	vm.mu.Unlock()
 
-	// Get the next track from the queue
 	track := vm.client.QueueManager.GetNextTrack(guildID)
 	if track == nil {
 		logger.InfoLogger.Printf("No tracks in queue for guild %s", guildID)
@@ -257,59 +265,46 @@ func (vm *VoiceManager) StartPlayingFromQueue(guildID string) {
 	}
 
 	vm.mu.Lock()
-	if _, exists := vm.players[guildID]; !exists {
-		// Create a new player
-		vm.players[guildID] = audio.NewPlayer(vc)
-	} else {
-		// Reset existing player
-		vm.players[guildID].Stop()
-	}
-
+	vm.players[guildID] = audio.NewPlayer(vc)
 	player := vm.players[guildID]
 	player.SetVolume(volume)
 	vm.playbackStatus[guildID] = audio.StatePlaying
 	vm.mu.Unlock()
 
-	// Start playback
 	logger.InfoLogger.Printf("Playing track: %s", track.Title)
 
 	player.PlayTrack(track)
 
-	// Set track metadata
 	vm.client.Session.UpdateGameStatus(0, fmt.Sprintf("🎵 %s", track.Title))
 
-	// Increment play count
 	vm.client.QueueManager.IncrementPlayCount(track)
 }
 
 func (vm *VoiceManager) handleTrackFinished(guildID string, track *audio.Track) {
 	logger.InfoLogger.Printf("Track finished: %s in guild %s", track.Title, guildID)
 
-	// Mark the track as played in the database
 	vm.client.QueueManager.MarkTrackAsPlayed(guildID, track)
 
-	// Check if there are more tracks in the queue WITHOUT removing any
+	vm.mu.RLock()
+	_, isConnected := vm.voiceConnections[guildID]
+	vm.mu.RUnlock()
+
+	if !isConnected {
+		logger.InfoLogger.Printf("Voice connection lost, cannot play next track")
+		return
+	}
+
 	nextTrack := vm.client.QueueManager.PeekNextTrack(guildID)
 	if nextTrack != nil {
 		logger.InfoLogger.Printf("Next track: %s", nextTrack.Title)
 
-		vm.mu.RLock()
-		_, isConnected := vm.voiceConnections[guildID]
-		vm.mu.RUnlock()
+		time.Sleep(200 * time.Millisecond)
 
-		if !isConnected {
-			logger.InfoLogger.Printf("Voice connection lost, cannot play next track")
-			return
-		}
-
-		// Play the next track (this will call GetNextTrack internally)
 		vm.StartPlayingFromQueue(guildID)
 	} else {
-		// Queue is empty, update status
 		vm.client.Session.UpdateGameStatus(0, "Queue is empty | Use /play")
 		logger.InfoLogger.Printf("Queue is empty for guild %s", guildID)
 
-		// Wait a bit and then check if we should return to idle mode
 		go func() {
 			time.Sleep(5 * time.Second)
 			vm.client.checkIdleState()

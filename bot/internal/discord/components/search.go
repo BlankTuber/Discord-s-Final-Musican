@@ -47,7 +47,6 @@ func (h *SearchButtonHandler) ParseButtonID(customID string) (trackIndex int, gu
 }
 
 func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Respond immediately to prevent timeout
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -61,8 +60,6 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ Error processing button. Please try searching again."),
 		})
-
-		// Disable buttons
 		disableButtons(s, i.Message.ID, i.ChannelID)
 		return
 	}
@@ -75,7 +72,6 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// Get search results from cache
 	sessionID := fmt.Sprintf("search:%s:%s", guildID, userID)
 
 	h.client.Mu.RLock()
@@ -91,7 +87,6 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 	}
 	h.client.Mu.RUnlock()
 
-	// If not found with exact session ID, try to find by guild and user
 	if !cacheExists {
 		h.client.Mu.RLock()
 		for key, results := range h.client.SearchResultsCache {
@@ -113,8 +108,6 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ Search results expired or invalid. Please search again."),
 		})
-
-		// Disable buttons
 		disableButtons(s, i.Message.ID, i.ChannelID)
 		return
 	}
@@ -128,23 +121,18 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ You need to be in a voice channel to play music."),
 		})
-
-		// Disable buttons
 		disableButtons(s, i.Message.ID, i.ChannelID)
 		return
 	}
 
-	// Disable idle mode but don't stop radio yet - we'll stop it only if download succeeds
 	h.client.DisableIdleMode()
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(fmt.Sprintf("🔍 Selected: **%s**\n⏳ Downloading...", selectedTrack.Title)),
 	})
 
-	// Disable buttons immediately after selection
 	disableButtons(s, i.Message.ID, i.ChannelID)
 
-	// Once we've processed the button, remove the entry from cache to prevent issues
 	h.client.Mu.Lock()
 	delete(h.client.SearchResultsCache, sessionID)
 	h.client.Mu.Unlock()
@@ -159,7 +147,6 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// Check if the track is valid
 	if track == nil || track.Title == "" || track.FilePath == "" {
 		logger.ErrorLogger.Printf("Downloaded track is invalid or missing file")
 		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -168,64 +155,34 @@ func (h *SearchButtonHandler) Handle(s *discordgo.Session, i *discordgo.Interact
 		return
 	}
 
-	// After download is successful, join the voice channel
-	var joinSuccess bool
-	for attempt := 0; attempt < 3; attempt++ {
-		h.client.DisableIdleMode() // Disable idle mode on each attempt
+	track.Requester = i.Member.User.Username
+	track.RequestedAt = time.Now().Unix()
 
+	wasConnected := h.client.VoiceManager.IsConnected(guildID)
+	if !wasConnected {
 		err = h.client.RobustJoinVoiceChannel(guildID, channelID)
-		if err == nil {
-			joinSuccess = true
+		if err != nil {
+			logger.ErrorLogger.Printf("Failed to join voice channel: %v", err)
 
-			// Ensure the join succeeded by waiting and checking
-			time.Sleep(300 * time.Millisecond)
-			if h.client.VoiceManager.IsConnectedToChannel(guildID, channelID) {
-				break
-			} else {
-				logger.WarnLogger.Println("Voice connection confirmed failed despite successful join call")
-			}
+			h.client.QueueManager.AddTrack(guildID, track)
+
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr(fmt.Sprintf("⚠️ Added **%s** to queue but couldn't join voice. Use /start to begin playback.", track.Title)),
+			})
+			return
 		}
-		logger.WarnLogger.Printf("Join attempt %d failed: %v", attempt+1, err)
+
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	if !joinSuccess {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("❌ Failed to join voice channel: %s", err.Error())),
-		})
-		return
-	}
-
-	// Make sure we're actually connected before continuing
-	if !h.client.VoiceManager.IsConnected(guildID) {
-		s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to establish stable voice connection. Try the /start command after adding to queue."),
-		})
-
-		// Still add the track to queue so user can try /start later
-		track.Requester = i.Member.User.Username
-		track.RequestedAt = time.Now().Unix()
-		h.client.QueueManager.AddTrack(guildID, track)
-
-		return
-	}
-
-	// Now that download is successful and we've joined the voice channel,
-	// stop radio if it's playing
 	if h.client.RadioManager.IsPlaying() {
 		logger.InfoLogger.Println("Stopping radio before track playback")
 		h.client.RadioManager.Stop()
 		time.Sleep(300 * time.Millisecond)
 	}
 
-	track.Requester = i.Member.User.Username
-	track.RequestedAt = time.Now().Unix()
-
 	logger.InfoLogger.Printf("Adding track to queue: %s", track.Title)
 	h.client.QueueManager.AddTrack(guildID, track)
-
-	// Wait a moment before notifying success
-	time.Sleep(200 * time.Millisecond)
 
 	s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: stringPtr(fmt.Sprintf("✅ Added to queue: **%s**", track.Title)),
