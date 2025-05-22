@@ -40,7 +40,7 @@ type Player struct {
 	state        PlayerState
 	currentTrack *Track
 	pausedTrack  *Track
-	pausedOffset int64 
+	pausedOffset int64
 }
 
 type PlayerEvent struct {
@@ -62,7 +62,7 @@ func NewPlayer(vc *discordgo.VoiceConnection) *Player {
 	return &Player{
 		vc:          vc,
 		stopChan:    make(chan bool, 1),
-		volumeLevel: 0.5,
+		volumeLevel: 0.1,
 		state:       StateStopped,
 		pauseFlag:   false,
 		skipFlag:    false,
@@ -102,7 +102,6 @@ func (p *Player) PlayTrack(track *Track) {
 		return
 	}
 
-	
 	p.Stop()
 
 	p.mu.Lock()
@@ -112,7 +111,6 @@ func (p *Player) PlayTrack(track *Track) {
 	p.state = StatePlaying
 	p.mu.Unlock()
 
-	
 	guildID := ""
 	if p.vc != nil {
 		guildID = p.vc.GuildID
@@ -126,7 +124,6 @@ func (p *Player) PlayTrack(track *Track) {
 		})
 	}
 
-	
 	go p.playTrackInternal(track)
 }
 
@@ -212,25 +209,23 @@ func (p *Player) playTrackInternal(track *Track) {
 	audioBuf := make([]int16, frameSize*channels)
 	opusBuffer := make([]byte, 1000)
 
-	
 	playing := true
 	paused := false
 	skipped := false
 
 	for playing {
-		
+
 		p.mu.Lock()
 		paused = p.pauseFlag
 		skipped = p.skipFlag
 		p.mu.Unlock()
 
 		if paused {
-			
+
 			p.mu.Lock()
 			p.state = StatePaused
 			p.mu.Unlock()
 
-			
 			for _, handler := range eventHandlers {
 				handler(PlayerEvent{
 					Type:    "track_pause",
@@ -240,17 +235,16 @@ func (p *Player) playTrackInternal(track *Track) {
 			}
 
 			logger.InfoLogger.Printf("Track paused: %s", track.Title)
-			return 
+			return
 		}
 
 		if skipped {
-			
+
 			playing = false
 			skipped = true
 			continue
 		}
 
-		
 		done := make(chan struct{})
 		var readErr error
 
@@ -274,7 +268,6 @@ func (p *Player) playTrackInternal(track *Track) {
 		case <-p.stopChan:
 			playing = false
 
-			
 			p.mu.Lock()
 			paused = p.pauseFlag
 			skipped = p.skipFlag
@@ -287,7 +280,6 @@ func (p *Player) playTrackInternal(track *Track) {
 			continue
 		}
 
-		
 		opusData, err := encoder.Encode(audioBuf, frameSize, len(opusBuffer))
 		if err != nil {
 			logger.ErrorLogger.Printf("Error encoding to opus: %v", err)
@@ -295,7 +287,6 @@ func (p *Player) playTrackInternal(track *Track) {
 			continue
 		}
 
-		
 		select {
 		case vc.OpusSend <- opusData:
 		case <-time.After(1 * time.Second):
@@ -304,7 +295,6 @@ func (p *Player) playTrackInternal(track *Track) {
 		case <-p.stopChan:
 			playing = false
 
-			
 			p.mu.Lock()
 			paused = p.pauseFlag
 			skipped = p.skipFlag
@@ -312,28 +302,23 @@ func (p *Player) playTrackInternal(track *Track) {
 		}
 	}
 
-	
 	elapsedTime := int(time.Since(startTime).Seconds())
 
-	
 	p.fireTrackEndEvent(track, skipped, elapsedTime)
 }
 
 func (p *Player) fireTrackEndEvent(track *Track, skipped bool, elapsedTime int) {
 	p.mu.Lock()
 
-	
 	if !p.pauseFlag {
 		p.state = StateStopped
 		p.currentTrack = nil
 		p.stream = nil
 	}
 
-	
 	skippedFlag := p.skipFlag
 	p.skipFlag = false
 
-	
 	guildID := ""
 	if p.vc != nil {
 		guildID = p.vc.GuildID
@@ -341,7 +326,6 @@ func (p *Player) fireTrackEndEvent(track *Track, skipped bool, elapsedTime int) 
 
 	p.mu.Unlock()
 
-	
 	eventType := "track_end"
 	if skippedFlag {
 		eventType = "track_skipped"
@@ -365,7 +349,7 @@ func (p *Player) Pause() {
 	}
 
 	p.pauseFlag = true
-	
+
 	p.pausedTrack = p.currentTrack
 	p.state = StatePaused
 	p.mu.Unlock()
@@ -373,12 +357,11 @@ func (p *Player) Pause() {
 	select {
 	case p.stopChan <- true:
 	default:
-		
+
 		p.stopChan = make(chan bool, 1)
 		p.stopChan <- true
 	}
 
-	
 	logger.InfoLogger.Printf("Track paused: %s", p.pausedTrack.Title)
 }
 
@@ -396,10 +379,8 @@ func (p *Player) Resume() {
 	p.state = StatePlaying
 	p.mu.Unlock()
 
-	
 	logger.InfoLogger.Printf("Resuming playback of: %s", track.Title)
 
-	
 	go p.playTrackInternal(track)
 }
 
@@ -418,7 +399,7 @@ func (p *Player) Skip() {
 	select {
 	case p.stopChan <- true:
 	default:
-		
+
 		p.stopChan = make(chan bool, 1)
 		p.stopChan <- true
 	}
@@ -427,7 +408,6 @@ func (p *Player) Skip() {
 func (p *Player) Stop() {
 	p.mu.Lock()
 
-	
 	if p.state == StateStopped {
 		p.mu.Unlock()
 		return
@@ -439,16 +419,14 @@ func (p *Player) Stop() {
 	p.pausedTrack = nil
 	p.mu.Unlock()
 
-	
 	select {
 	case p.stopChan <- true:
 	default:
-		
+
 		p.stopChan = make(chan bool, 1)
 		p.stopChan <- true
 	}
 
-	
 	time.Sleep(100 * time.Millisecond)
 }
 
