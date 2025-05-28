@@ -1,0 +1,7 @@
+{
+    "token": "YOUR_BOT_TOKEN_HERE",
+    "uds_path": "/tmp/downloader.sock",
+    "guild_id": "YOUR_GUILD_ID_HERE",
+    "idle_channel": "YOUR_IDLE_CHANNEL_ID_HERE",
+    "db_path": "bot.db"
+}
