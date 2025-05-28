@@ -22,8 +22,8 @@ type Manager struct {
 	socketClient       *socket.Client
 	radioManager       *radio.Manager
 	vcGetter           func() *discordgo.VoiceConnection
-	activeDownloads    map[string]bool // Track active downloads to prevent duplicates
-	activePlaylistUrls map[string]bool // Track active playlist downloads
+	activeDownloads    map[string]bool
+	activePlaylistUrls map[string]bool
 	mu                 sync.RWMutex
 	downloadMu         sync.RWMutex
 }
@@ -50,7 +50,6 @@ func (m *Manager) RequestSong(url, requestedBy string) error {
 		return fmt.Errorf("downloader not available")
 	}
 
-	// Check if this URL is already being downloaded
 	m.downloadMu.Lock()
 	if m.activeDownloads[url] {
 		m.downloadMu.Unlock()
@@ -78,12 +77,11 @@ func (m *Manager) RequestSong(url, requestedBy string) error {
 	return nil
 }
 
-func (m *Manager) RequestPlaylist(url, requestedBy string) error {
+func (m *Manager) RequestPlaylist(url, requestedBy string, limit int) error {
 	if m.socketClient == nil || !m.socketClient.IsConnected() {
 		return fmt.Errorf("downloader not available")
 	}
 
-	// Check if this playlist is already being downloaded
 	m.downloadMu.Lock()
 	if m.activePlaylistUrls[url] {
 		m.downloadMu.Unlock()
@@ -93,7 +91,7 @@ func (m *Manager) RequestPlaylist(url, requestedBy string) error {
 	m.activePlaylistUrls[url] = true
 	m.downloadMu.Unlock()
 
-	logger.Info.Printf("Requesting playlist download for: %s", url)
+	logger.Info.Printf("Requesting playlist download for: %s (limit: %d)", url, limit)
 
 	go func() {
 		defer func() {
@@ -102,7 +100,7 @@ func (m *Manager) RequestPlaylist(url, requestedBy string) error {
 			m.downloadMu.Unlock()
 		}()
 
-		err := m.socketClient.SendPlaylistRequest(url, requestedBy)
+		err := m.socketClient.SendPlaylistRequest(url, requestedBy, limit)
 		if err != nil {
 			logger.Error.Printf("Failed to send playlist request: %v", err)
 		}
@@ -112,7 +110,6 @@ func (m *Manager) RequestPlaylist(url, requestedBy string) error {
 }
 
 func (m *Manager) OnDownloadComplete(song *state.Song) error {
-	// Run queue operations in a goroutine to avoid blocking
 	go func() {
 		err := m.queue.Add(song)
 		if err != nil {
@@ -122,7 +119,6 @@ func (m *Manager) OnDownloadComplete(song *state.Song) error {
 
 		logger.Info.Printf("Song added to queue: %s by %s", song.Title, song.Artist)
 
-		// Handle state transitions
 		m.handleQueueAddition()
 	}()
 
@@ -130,7 +126,6 @@ func (m *Manager) OnDownloadComplete(song *state.Song) error {
 }
 
 func (m *Manager) OnPlaylistItemComplete(playlistUrl string, song *state.Song) error {
-	// Handle individual playlist items as they download
 	return m.OnDownloadComplete(song)
 }
 
@@ -138,10 +133,8 @@ func (m *Manager) handleQueueAddition() {
 	currentState := m.stateManager.GetBotState()
 
 	if currentState == state.StateDJ && !m.player.IsPlaying() {
-		// Already in DJ mode but not playing, start the next song
 		m.startNextSong()
 	} else if currentState == state.StateRadio || currentState == state.StateIdle {
-		// Switch from radio/idle to DJ mode
 		m.radioManager.Stop()
 		m.stateManager.SetBotState(state.StateDJ)
 		m.startNextSong()
@@ -179,7 +172,6 @@ func (m *Manager) Stop() {
 }
 
 func (m *Manager) startNextSong() {
-	// Use a goroutine to avoid blocking
 	go func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -208,7 +200,6 @@ func (m *Manager) startNextSong() {
 }
 
 func (m *Manager) playNext() {
-	// Use a goroutine to avoid blocking
 	go func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -248,9 +239,8 @@ func (m *Manager) onSongEnd() {
 	} else {
 		logger.Info.Println("Queue finished, no more songs")
 
-		// Handle returning to radio state when queue is empty
 		go func() {
-			time.Sleep(1 * time.Second) // Brief pause before switching modes
+			time.Sleep(1 * time.Second)
 
 			if m.stateManager.IsInIdleChannel() {
 				m.stateManager.SetBotState(state.StateIdle)

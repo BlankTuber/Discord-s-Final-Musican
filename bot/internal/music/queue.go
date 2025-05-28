@@ -1,6 +1,7 @@
 package music
 
 import (
+	"database/sql"
 	"fmt"
 	"musicbot/internal/config"
 	"musicbot/internal/logger"
@@ -48,12 +49,25 @@ func (q *Queue) loadFromDatabase() {
 }
 
 func (q *Queue) Add(song *state.Song) error {
-	songID, err := q.dbManager.AddSong(song)
-	if err != nil {
-		return fmt.Errorf("failed to add song to database: %w", err)
+	var songID int64
+
+	existing, err := q.dbManager.GetSongByURL(song.URL)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("failed to check for existing song: %w", err)
 	}
 
-	song.ID = songID
+	if existing != nil {
+		songID = existing.ID
+		song.ID = songID
+		logger.Info.Printf("Using existing song from database: %s (ID: %d)", song.Title, songID)
+	} else {
+		songID, err = q.dbManager.AddSong(song)
+		if err != nil {
+			return fmt.Errorf("failed to add song to database: %w", err)
+		}
+		song.ID = songID
+		logger.Info.Printf("Added new song to database: %s (ID: %d)", song.Title, songID)
+	}
 
 	err = q.dbManager.AddToQueue(songID)
 	if err != nil {

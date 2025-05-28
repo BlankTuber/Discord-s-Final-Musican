@@ -38,7 +38,7 @@ func (dm *DatabaseManager) initTables() error {
 	CREATE TABLE IF NOT EXISTS songs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		title TEXT NOT NULL,
-		url TEXT NOT NULL,
+		url TEXT NOT NULL UNIQUE,
 		platform TEXT NOT NULL,
 		file_path TEXT NOT NULL,
 		duration INTEGER,
@@ -113,6 +113,23 @@ func (dm *DatabaseManager) SaveVolume(volume float32) error {
 func (dm *DatabaseManager) SaveStream(stream string) error {
 	_, err := dm.db.Exec("UPDATE config SET value = ? WHERE key = 'stream'", stream)
 	return err
+}
+
+func (dm *DatabaseManager) GetSongByURL(url string) (*state.Song, error) {
+	var song state.Song
+	var isStreamBool bool // Change type to bool
+
+	err := dm.db.QueryRow(`
+        SELECT id, title, url, platform, file_path, duration, file_size, thumbnail_url, artist, is_stream
+        FROM songs WHERE url = ?
+    `, url).Scan(&song.ID, &song.Title, &song.URL, &song.Platform, &song.FilePath, &song.Duration, &song.FileSize, &song.ThumbnailURL, &song.Artist, &isStreamBool) // Scan directly into bool
+
+	if err != nil {
+		return nil, err
+	}
+
+	song.IsStream = isStreamBool
+	return &song, nil
 }
 
 func (dm *DatabaseManager) AddSong(song *state.Song) (int64, error) {

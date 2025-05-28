@@ -34,7 +34,7 @@ type Client struct {
 	downloadHandler      func(*state.Song)
 	playlistHandler      func([]state.Song)
 	searchHandler        func([]SearchResult)
-	playlistEventHandler func(string, *state.Song) // playlist ID, song
+	playlistEventHandler func(string, *state.Song)
 	mu                   sync.RWMutex
 	pendingRequests      map[string]chan interface{}
 }
@@ -138,9 +138,16 @@ func (c *Client) SendDownloadRequest(url, requestedBy string) error {
 	return nil
 }
 
-func (c *Client) SendPlaylistRequest(url, requestedBy string) error {
+func (c *Client) SendPlaylistRequest(url, requestedBy string, limit int) error {
 	if !c.IsConnected() {
 		return fmt.Errorf("not connected")
+	}
+
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
 	}
 
 	requestID := c.generateRequestID()
@@ -151,7 +158,7 @@ func (c *Client) SendPlaylistRequest(url, requestedBy string) error {
 		Params: map[string]interface{}{
 			"url":       url,
 			"requester": requestedBy,
-			"max_items": 50, // Limit playlist size
+			"max_items": limit,
 		},
 	}
 
@@ -221,7 +228,7 @@ func (c *Client) readMessage() ([]byte, error) {
 	}
 
 	messageLen := binary.BigEndian.Uint32(lengthBuf)
-	if messageLen > 10*1024*1024 { // 10MB limit
+	if messageLen > 10*1024*1024 {
 		return nil, fmt.Errorf("message too large: %d bytes", messageLen)
 	}
 
@@ -301,7 +308,6 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		return
 	}
 
-	// Handle single song downloads
 	if title, hasTitle := data["title"].(string); hasTitle {
 		song := &state.Song{
 			ID:           int64(getInt(data, "id")),
@@ -321,7 +327,6 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		}
 	}
 
-	// Handle search results
 	if results, hasResults := data["results"].([]interface{}); hasResults {
 		searchResults := make([]SearchResult, 0)
 		for _, result := range results {
@@ -343,7 +348,6 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		}
 	}
 
-	// Handle playlist responses (legacy batch downloads)
 	if items, hasItems := data["items"].([]interface{}); hasItems {
 		songs := make([]state.Song, 0)
 		for _, item := range items {
@@ -369,7 +373,6 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		}
 	}
 
-	// Handle async playlist start response
 	if playlistID, hasPlaylistID := data["playlist_id"].(string); hasPlaylistID {
 		logger.Info.Printf("Started async playlist download: %s", playlistID)
 	}
@@ -379,7 +382,6 @@ func (c *Client) handleEventResponse(response DownloadResponse) {
 	if response.Event == "playlist_item_downloaded" && response.Data != nil {
 		data := response.Data
 
-		// Extract track data
 		if trackData, hasTrack := data["track"].(map[string]interface{}); hasTrack {
 			song := &state.Song{
 				ID:           int64(getInt(trackData, "id")),
@@ -394,17 +396,14 @@ func (c *Client) handleEventResponse(response DownloadResponse) {
 				IsStream:     getBool(trackData, "is_stream"),
 			}
 
-			// Extract playlist info
 			var playlistID string
 			if playlistData, hasPlaylist := data["playlist"].(map[string]interface{}); hasPlaylist {
-				playlistID = getString(playlistData, "url") // Use URL as identifier
+				playlistID = getString(playlistData, "url")
 			}
 
-			// Call the playlist event handler if available
 			if c.playlistEventHandler != nil {
 				c.playlistEventHandler(playlistID, song)
 			} else if c.downloadHandler != nil {
-				// Fallback to single download handler
 				c.downloadHandler(song)
 			}
 		}

@@ -43,6 +43,14 @@ func (c *PlaylistCommand) Options() []*discordgo.ApplicationCommandOption {
 			Description: "URL of the playlist to play",
 			Required:    true,
 		},
+		{
+			Type:        discordgo.ApplicationCommandOptionInteger,
+			Name:        "limit",
+			Description: "Maximum number of songs to download (default: 20, max: 50)",
+			Required:    false,
+			MinValue:    func() *float64 { v := 1.0; return &v }(),
+			MaxValue:    50,
+		},
 	}
 }
 
@@ -54,10 +62,20 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return err
 	}
 
-	url := i.ApplicationCommandData().Options[0].StringValue()
+	options := i.ApplicationCommandData().Options
+	url := options[0].StringValue()
 	userID := i.Member.User.ID
 
-	// Verify user is in voice channel
+	limit := 20
+	if len(options) > 1 && options[1].IntValue() > 0 {
+		providedLimit := int(options[1].IntValue())
+		if providedLimit > 50 {
+			limit = 50
+		} else {
+			limit = providedLimit
+		}
+	}
+
 	userVS, err := s.State.VoiceState(i.GuildID, userID)
 	if err != nil || userVS == nil || userVS.ChannelID == "" {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -66,7 +84,6 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return err
 	}
 
-	// Handle voice channel switching
 	userChannelID := userVS.ChannelID
 	currentChannelID := c.stateManager.GetCurrentChannel()
 
@@ -109,19 +126,16 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		}
 	}
 
-	// Start async playlist download
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(fmt.Sprintf("📜 Starting playlist download from: %s\n⏳ Songs will be added to queue as they download...", url)),
+		Content: stringPtr(fmt.Sprintf("📜 Starting playlist download from: %s\n⏳ Downloading up to %d songs. Songs will be added to queue as they download...", url, limit)),
 	})
 	if err != nil {
 		return err
 	}
 
-	// Request playlist download asynchronously
 	go func() {
-		err := c.musicManager.RequestPlaylist(url, userID)
+		err := c.musicManager.RequestPlaylist(url, userID, limit)
 		if err != nil {
-			// Update the interaction with error message
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 				Content: stringPtr(fmt.Sprintf("❌ Failed to request playlist: %v", err)),
 			})
