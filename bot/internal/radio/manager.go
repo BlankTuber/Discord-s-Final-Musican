@@ -4,7 +4,6 @@ import (
 	"context"
 	"musicbot/internal/logger"
 	"musicbot/internal/state"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -55,7 +54,6 @@ func (m *Manager) ChangeStream(streamName string) error {
 	wasPlaying := m.player.IsPlaying()
 	if wasPlaying {
 		m.Stop()
-		time.Sleep(500 * time.Millisecond)
 	}
 
 	m.stateManager.SetRadioStream(stream.URL)

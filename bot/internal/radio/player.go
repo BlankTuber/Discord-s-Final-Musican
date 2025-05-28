@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"musicbot/internal/logger"
@@ -46,23 +47,38 @@ func (se StreamError) Error() string {
 type Player struct {
 	stateManager *state.Manager
 	stopChan     chan bool
+	doneChan     chan struct{}
 	isPlaying    bool
 	ctx          context.Context
 	cancel       context.CancelFunc
+	mu           sync.RWMutex
 }
 
 func NewPlayer(stateManager *state.Manager) *Player {
 	return &Player{
 		stateManager: stateManager,
 		stopChan:     make(chan bool, 1),
+		doneChan:     make(chan struct{}),
 	}
 }
 
 func (p *Player) Start(vc *discordgo.VoiceConnection) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.isPlaying {
 		return nil
 	}
 
+	// Drain any leftover signals from previous stop operations
+	select {
+	case <-p.stopChan:
+		logger.Debug.Println("Drained leftover stop signal from previous operation")
+	default:
+	}
+
+	// Create new done channel for this session
+	p.doneChan = make(chan struct{})
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	p.stateManager.SetStreaming(true)
@@ -74,7 +90,9 @@ func (p *Player) Start(vc *discordgo.VoiceConnection) error {
 }
 
 func (p *Player) Stop() {
+	p.mu.Lock()
 	if !p.isPlaying {
+		p.mu.Unlock()
 		return
 	}
 
@@ -89,12 +107,30 @@ func (p *Player) Stop() {
 	default:
 	}
 
+	// Get reference to done channel before releasing lock
+	doneChan := p.doneChan
+	p.mu.Unlock()
+
+	// Wait for goroutine to actually finish
+	if doneChan != nil {
+		select {
+		case <-doneChan:
+			logger.Debug.Println("Radio player stopped successfully")
+		case <-time.After(3 * time.Second):
+			logger.Error.Println("Timeout waiting for radio player to stop")
+		}
+	}
+
+	p.mu.Lock()
 	p.isPlaying = false
 	p.stateManager.SetStreaming(false)
 	p.stateManager.SetRadioPlaying(false)
+	p.mu.Unlock()
 }
 
 func (p *Player) IsPlaying() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.isPlaying
 }
 
@@ -116,9 +152,16 @@ func (p *Player) Name() string {
 
 func (p *Player) streamLoop(vc *discordgo.VoiceConnection) {
 	defer func() {
-		p.isPlaying = false
-		p.stateManager.SetStreaming(false)
-		p.stateManager.SetRadioPlaying(false)
+		// Signal that the goroutine has finished
+		p.mu.RLock()
+		doneChan := p.doneChan
+		p.mu.RUnlock()
+
+		if doneChan != nil {
+			close(doneChan)
+		}
+
+		logger.Debug.Println("Radio stream goroutine finished")
 	}()
 
 	consecutiveNetworkErrors := 0
