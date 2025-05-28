@@ -8,6 +8,7 @@ import (
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +58,17 @@ func (c *SearchCommand) Options() []*discordgo.ApplicationCommandOption {
 			Description: "Search query for songs",
 			Required:    true,
 		},
+		{
+			Type:        discordgo.ApplicationCommandOptionString,
+			Name:        "platform",
+			Description: "Platform to search on",
+			Required:    false,
+			Choices: []*discordgo.ApplicationCommandOptionChoice{
+				{Name: "SoundCloud", Value: "soundcloud"},
+				{Name: "YouTube", Value: "youtube"},
+				{Name: "YouTube Music", Value: "music.youtube.com"},
+			},
+		},
 	}
 }
 
@@ -68,8 +80,15 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 		return err
 	}
 
-	query := i.ApplicationCommandData().Options[0].StringValue()
+	options := i.ApplicationCommandData().Options
+	query := options[0].StringValue()
 	userID := i.Member.User.ID
+
+	// Default to SoundCloud, but allow user to choose
+	platform := "soundcloud"
+	if len(options) > 1 && options[1].StringValue() != "" {
+		platform = options[1].StringValue()
+	}
 
 	userVS, err := s.State.VoiceState(i.GuildID, userID)
 	if err != nil || userVS == nil || userVS.ChannelID == "" {
@@ -86,16 +105,25 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 		return err
 	}
 
+	platformName := "SoundCloud"
+	switch platform {
+	case "youtube":
+		platformName = "YouTube"
+	case "music.youtube.com":
+		platformName = "YouTube Music"
+	}
+
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(fmt.Sprintf("🔍 Searching for: %s\n⏳ Please wait...", query)),
+		Content: stringPtr(fmt.Sprintf("🔍 Searching %s for: %s\n⏳ Please wait...", platformName, query)),
 	})
 	if err != nil {
 		return err
 	}
 
-	searchKey := fmt.Sprintf("%s_%s", userID, i.Interaction.ID)
+	// Create a unique search key that doesn't use underscores to avoid parsing issues
+	searchKey := fmt.Sprintf("%s-%s", userID, i.Interaction.ID)
 
-	err = c.socketClient.SendSearchRequest(query, 5)
+	err = c.socketClient.SendSearchRequest(query, platform, 5)
 	if err != nil {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr(fmt.Sprintf("❌ Failed to search: %v", err)),
@@ -208,12 +236,25 @@ func (c *SearchCommand) HandleSearchSelection(s *discordgo.Session, i *discordgo
 		return err
 	}
 
-	var searchKey string
-	var selectedIndex int
-	_, err = fmt.Sscanf(customID, "search_select_%s_%d", &searchKey, &selectedIndex)
+	// Parse the custom ID - format: "search_select_USERID-INTERACTIONID_INDEX"
+	// Split by underscores, but be careful because the format is "search_select_SEARCHKEY_INDEX"
+	parts := strings.Split(customID, "_")
+	if len(parts) < 4 || parts[0] != "search" || parts[1] != "select" {
+		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ Invalid selection format."),
+		})
+		return err
+	}
+
+	// The search key is everything between "search_select_" and the last "_INDEX"
+	// So we join parts[2:len(parts)-1] and the last part is the index
+	searchKey := strings.Join(parts[2:len(parts)-1], "_")
+	selectedIndexStr := parts[len(parts)-1]
+
+	selectedIndex, err := strconv.Atoi(selectedIndexStr)
 	if err != nil {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Invalid selection."),
+			Content: stringPtr("❌ Invalid selection index."),
 		})
 		return err
 	}

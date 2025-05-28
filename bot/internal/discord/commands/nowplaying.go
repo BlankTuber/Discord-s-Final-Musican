@@ -58,8 +58,8 @@ func (c *NowPlayingCommand) generateNowPlayingMessage() string {
 		}
 
 		duration := c.formatDuration(currentSong.Duration)
-		message := fmt.Sprintf("🎧 **Now Playing:**\n**%s** - %s\n⏱️ Duration: %s\n👤 Requested by: <@%s>",
-			currentSong.Title, currentSong.Artist, duration, currentSong.RequestedBy)
+		message := fmt.Sprintf("🎧 **Now Playing:**\n**%s** - %s\n⏱️ Duration: %s",
+			currentSong.Title, currentSong.Artist, duration)
 
 		upcoming := c.musicManager.GetUpcoming(3)
 		if len(upcoming) > 0 {

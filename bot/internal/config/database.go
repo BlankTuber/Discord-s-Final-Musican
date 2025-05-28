@@ -3,6 +3,7 @@ package config
 import (
 	"database/sql"
 	"musicbot/internal/state"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -37,12 +38,17 @@ func (dm *DatabaseManager) initTables() error {
 	CREATE TABLE IF NOT EXISTS songs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		title TEXT NOT NULL,
-		artist TEXT NOT NULL,
-		duration INTEGER NOT NULL,
-		file_path TEXT NOT NULL,
 		url TEXT NOT NULL,
-		requested_by TEXT NOT NULL,
-		added_at DATETIME NOT NULL
+		platform TEXT NOT NULL,
+		file_path TEXT NOT NULL,
+		duration INTEGER,
+		file_size INTEGER,
+		thumbnail_url TEXT,
+		artist TEXT,
+		download_date INTEGER NOT NULL,
+		is_stream INTEGER DEFAULT 0,
+		play_count INTEGER DEFAULT 0,
+		last_played INTEGER
 	);
 	
 	CREATE TABLE IF NOT EXISTS queue (
@@ -111,9 +117,9 @@ func (dm *DatabaseManager) SaveStream(stream string) error {
 
 func (dm *DatabaseManager) AddSong(song *state.Song) (int64, error) {
 	result, err := dm.db.Exec(`
-		INSERT INTO songs (title, artist, duration, file_path, url, requested_by, added_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, song.Title, song.Artist, song.Duration, song.FilePath, song.URL, song.RequestedBy, song.AddedAt)
+		INSERT INTO songs (title, url, platform, file_path, duration, file_size, thumbnail_url, artist, download_date, is_stream)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, song.Title, song.URL, song.Platform, song.FilePath, song.Duration, song.FileSize, song.ThumbnailURL, song.Artist, time.Now().Unix(), song.IsStream)
 
 	if err != nil {
 		return 0, err
@@ -135,7 +141,7 @@ func (dm *DatabaseManager) AddToQueue(songID int64) error {
 
 func (dm *DatabaseManager) GetQueue() ([]state.QueueItem, error) {
 	rows, err := dm.db.Query(`
-		SELECT q.id, q.song_id, q.position, s.title, s.artist, s.duration, s.file_path, s.url, s.requested_by, s.added_at
+		SELECT q.id, q.song_id, q.position, s.title, s.url, s.platform, s.file_path, s.duration, s.file_size, s.thumbnail_url, s.artist, s.is_stream
 		FROM queue q
 		JOIN songs s ON q.song_id = s.id
 		ORDER BY q.position
@@ -149,15 +155,16 @@ func (dm *DatabaseManager) GetQueue() ([]state.QueueItem, error) {
 	for rows.Next() {
 		var item state.QueueItem
 		var song state.Song
+		var isStreamInt int
 
 		err := rows.Scan(&item.ID, &item.SongID, &item.Position,
-			&song.Title, &song.Artist, &song.Duration, &song.FilePath,
-			&song.URL, &song.RequestedBy, &song.AddedAt)
+			&song.Title, &song.URL, &song.Platform, &song.FilePath, &song.Duration, &song.FileSize, &song.ThumbnailURL, &song.Artist, &isStreamInt)
 		if err != nil {
 			continue
 		}
 
 		song.ID = item.SongID
+		song.IsStream = isStreamInt == 1
 		item.Song = &song
 		queue = append(queue, item)
 	}

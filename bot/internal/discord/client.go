@@ -67,16 +67,16 @@ func (c *Client) setupMusicManager() {
 	c.musicManager.SetVoiceConnectionGetter(c.voiceManager.GetVoiceConnection)
 
 	if c.socketClient != nil {
-		c.socketClient.SetDownloadHandler(func(song *state.Song, requestedBy string) {
-			err := c.musicManager.OnDownloadComplete(song, requestedBy)
+		c.socketClient.SetDownloadHandler(func(song *state.Song) {
+			err := c.musicManager.OnDownloadComplete(song)
 			if err != nil {
 				logger.Error.Printf("Failed to handle download completion: %v", err)
 			}
 		})
 
-		c.socketClient.SetPlaylistHandler(func(songs []state.Song, requestedBy string) {
+		c.socketClient.SetPlaylistHandler(func(songs []state.Song) {
 			for _, song := range songs {
-				err := c.musicManager.OnDownloadComplete(&song, requestedBy)
+				err := c.musicManager.OnDownloadComplete(&song)
 				if err != nil {
 					logger.Error.Printf("Failed to handle playlist song: %v", err)
 				}

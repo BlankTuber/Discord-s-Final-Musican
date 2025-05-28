@@ -11,7 +11,6 @@ import (
 	"musicbot/internal/logger"
 	"musicbot/internal/state"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -31,25 +30,22 @@ type Client struct {
 	socketPath      string
 	conn            net.Conn
 	connected       bool
-	downloadHandler func(*state.Song, string)  // Modified to include requestedBy
-	playlistHandler func([]state.Song, string) // Modified to include requestedBy
+	downloadHandler func(*state.Song)
+	playlistHandler func([]state.Song)
 	searchHandler   func([]SearchResult)
-	pendingRequests map[string]string // maps request ID to requester ID
-	mu              sync.RWMutex
 }
 
 func NewClient(socketPath string) *Client {
 	return &Client{
-		socketPath:      socketPath,
-		pendingRequests: make(map[string]string),
+		socketPath: socketPath,
 	}
 }
 
-func (c *Client) SetDownloadHandler(handler func(*state.Song, string)) {
+func (c *Client) SetDownloadHandler(handler func(*state.Song)) {
 	c.downloadHandler = handler
 }
 
-func (c *Client) SetPlaylistHandler(handler func([]state.Song, string)) {
+func (c *Client) SetPlaylistHandler(handler func([]state.Song)) {
 	c.playlistHandler = handler
 }
 
@@ -111,10 +107,6 @@ func (c *Client) SendDownloadRequest(url, requestedBy string) error {
 
 	requestID := c.generateRequestID()
 
-	c.mu.Lock()
-	c.pendingRequests[requestID] = requestedBy
-	c.mu.Unlock()
-
 	request := DownloadRequest{
 		Command: "download_audio",
 		ID:      requestID,
@@ -125,18 +117,12 @@ func (c *Client) SendDownloadRequest(url, requestedBy string) error {
 
 	data, err := json.Marshal(request)
 	if err != nil {
-		c.mu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.mu.Unlock()
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	err = c.sendMessage(data)
 	if err != nil {
 		c.connected = false
-		c.mu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.mu.Unlock()
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
@@ -150,10 +136,6 @@ func (c *Client) SendPlaylistRequest(url, requestedBy string) error {
 
 	requestID := c.generateRequestID()
 
-	c.mu.Lock()
-	c.pendingRequests[requestID] = requestedBy
-	c.mu.Unlock()
-
 	request := DownloadRequest{
 		Command: "download_playlist",
 		ID:      requestID,
@@ -164,25 +146,19 @@ func (c *Client) SendPlaylistRequest(url, requestedBy string) error {
 
 	data, err := json.Marshal(request)
 	if err != nil {
-		c.mu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.mu.Unlock()
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	err = c.sendMessage(data)
 	if err != nil {
 		c.connected = false
-		c.mu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.mu.Unlock()
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
 	return nil
 }
 
-func (c *Client) SendSearchRequest(query string, limit int) error {
+func (c *Client) SendSearchRequest(query string, platform string, limit int) error {
 	if !c.IsConnected() {
 		return fmt.Errorf("not connected")
 	}
@@ -191,8 +167,9 @@ func (c *Client) SendSearchRequest(query string, limit int) error {
 		Command: "search",
 		ID:      c.generateRequestID(),
 		Params: map[string]interface{}{
-			"query": query,
-			"limit": limit,
+			"query":    query,
+			"platform": platform,
+			"limit":    limit,
 		},
 	}
 
@@ -300,7 +277,7 @@ func (c *Client) handleResponse(data []byte) {
 			logger.Error.Printf("Download request failed: %s", response.Error)
 		}
 	} else if response.Type == "event" {
-		c.handleEventResponse(response)
+		logger.Info.Printf("Received event: %s", response.ID)
 	} else {
 		logger.Error.Printf("Unknown response type: %s", response.Type)
 	}
@@ -312,31 +289,25 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		return
 	}
 
-	// Get the requester for this response
-	c.mu.Lock()
-	requestedBy := c.pendingRequests[response.ID]
-	delete(c.pendingRequests, response.ID)
-	c.mu.Unlock()
-
-	// Check if this is a download response
 	if title, hasTitle := data["title"].(string); hasTitle {
 		song := &state.Song{
-			ID:          int64(getInt(data, "id")),
-			Title:       title,
-			FilePath:    getString(data, "filename"),
-			Duration:    getInt(data, "duration"),
-			Artist:      getString(data, "artist"),
-			URL:         getString(data, "url"),
-			RequestedBy: requestedBy,
-			AddedAt:     time.Now(),
+			ID:           int64(getInt(data, "id")),
+			Title:        title,
+			URL:          getString(data, "url"),
+			Platform:     getString(data, "platform"),
+			FilePath:     getString(data, "filename"),
+			Duration:     getInt(data, "duration"),
+			FileSize:     int64(getInt(data, "file_size")),
+			ThumbnailURL: getString(data, "thumbnail_url"),
+			Artist:       getString(data, "artist"),
+			IsStream:     getBool(data, "is_stream"),
 		}
 
 		if c.downloadHandler != nil {
-			c.downloadHandler(song, requestedBy)
+			c.downloadHandler(song)
 		}
 	}
 
-	// Check if this is a search response
 	if results, hasResults := data["results"].([]interface{}); hasResults {
 		searchResults := make([]SearchResult, 0)
 		for _, result := range results {
@@ -358,27 +329,28 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		}
 	}
 
-	// Check if this is a playlist response
 	if items, hasItems := data["items"].([]interface{}); hasItems {
 		songs := make([]state.Song, 0)
 		for _, item := range items {
 			if itemMap, ok := item.(map[string]interface{}); ok {
 				song := state.Song{
-					ID:          int64(getInt(itemMap, "id")),
-					Title:       getString(itemMap, "title"),
-					FilePath:    getString(itemMap, "filename"),
-					Duration:    getInt(itemMap, "duration"),
-					Artist:      getString(itemMap, "artist"),
-					URL:         getString(itemMap, "url"),
-					RequestedBy: requestedBy,
-					AddedAt:     time.Now(),
+					ID:           int64(getInt(itemMap, "id")),
+					Title:        getString(itemMap, "title"),
+					URL:          getString(itemMap, "url"),
+					Platform:     getString(itemMap, "platform"),
+					FilePath:     getString(itemMap, "filename"),
+					Duration:     getInt(itemMap, "duration"),
+					FileSize:     int64(getInt(itemMap, "file_size")),
+					ThumbnailURL: getString(itemMap, "thumbnail_url"),
+					Artist:       getString(itemMap, "artist"),
+					IsStream:     getBool(itemMap, "is_stream"),
 				}
 				songs = append(songs, song)
 			}
 		}
 
 		if c.playlistHandler != nil {
-			c.playlistHandler(songs, requestedBy)
+			c.playlistHandler(songs)
 		}
 	}
 }
@@ -400,6 +372,13 @@ func getInt(data map[string]interface{}, key string) int {
 		return int(val)
 	}
 	return 0
+}
+
+func getBool(data map[string]interface{}, key string) bool {
+	if val, ok := data[key].(bool); ok {
+		return val
+	}
+	return false
 }
 
 func (c *Client) Ping() error {

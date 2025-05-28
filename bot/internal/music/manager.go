@@ -70,12 +70,7 @@ func (m *Manager) RequestPlaylist(url, requestedBy string) error {
 	return nil
 }
 
-func (m *Manager) OnDownloadComplete(song *state.Song, requestedBy string) error {
-	// Ensure the RequestedBy field is set
-	if song.RequestedBy == "" {
-		song.RequestedBy = requestedBy
-	}
-
+func (m *Manager) OnDownloadComplete(song *state.Song) error {
 	err := m.queue.Add(song)
 	if err != nil {
 		return fmt.Errorf("failed to add song to queue: %w", err)

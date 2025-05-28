@@ -1,7 +1,5 @@
 package state
 
-import "time"
-
 type BotState int
 
 const (
@@ -51,14 +49,16 @@ type StreamOption struct {
 }
 
 type Song struct {
-	ID          int64     `json:"id"`
-	Title       string    `json:"title"`
-	Artist      string    `json:"artist"`
-	Duration    int       `json:"duration"`
-	FilePath    string    `json:"file_path"`
-	URL         string    `json:"url"`
-	RequestedBy string    `json:"requested_by"`
-	AddedAt     time.Time `json:"added_at"`
+	ID           int64  `json:"id"`
+	Title        string `json:"title"`
+	Artist       string `json:"artist"`
+	Duration     int    `json:"duration"`
+	FilePath     string `json:"file_path"`
+	URL          string `json:"url"`
+	Platform     string `json:"platform"`
+	FileSize     int64  `json:"file_size"`
+	ThumbnailURL string `json:"thumbnail_url"`
+	IsStream     bool   `json:"is_stream"`
 }
 
 type QueueItem struct {
