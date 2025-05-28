@@ -11,6 +11,7 @@ import (
 	"musicbot/internal/logger"
 	"musicbot/internal/state"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -27,17 +28,21 @@ type SearchRequest struct {
 }
 
 type Client struct {
-	socketPath      string
-	conn            net.Conn
-	connected       bool
-	downloadHandler func(*state.Song)
-	playlistHandler func([]state.Song)
-	searchHandler   func([]SearchResult)
+	socketPath           string
+	conn                 net.Conn
+	connected            bool
+	downloadHandler      func(*state.Song)
+	playlistHandler      func([]state.Song)
+	searchHandler        func([]SearchResult)
+	playlistEventHandler func(string, *state.Song) // playlist ID, song
+	mu                   sync.RWMutex
+	pendingRequests      map[string]chan interface{}
 }
 
 func NewClient(socketPath string) *Client {
 	return &Client{
-		socketPath: socketPath,
+		socketPath:      socketPath,
+		pendingRequests: make(map[string]chan interface{}),
 	}
 }
 
@@ -51,6 +56,10 @@ func (c *Client) SetPlaylistHandler(handler func([]state.Song)) {
 
 func (c *Client) SetSearchHandler(handler func([]SearchResult)) {
 	c.searchHandler = handler
+}
+
+func (c *Client) SetPlaylistEventHandler(handler func(string, *state.Song)) {
+	c.playlistEventHandler = handler
 }
 
 func (c *Client) Connect() error {
@@ -137,10 +146,12 @@ func (c *Client) SendPlaylistRequest(url, requestedBy string) error {
 	requestID := c.generateRequestID()
 
 	request := DownloadRequest{
-		Command: "download_playlist",
+		Command: "start_playlist_download",
 		ID:      requestID,
 		Params: map[string]interface{}{
-			"url": url,
+			"url":       url,
+			"requester": requestedBy,
+			"max_items": 50, // Limit playlist size
 		},
 	}
 
@@ -240,7 +251,7 @@ func (c *Client) listenForResponses() {
 			return
 		}
 
-		c.handleResponse(data)
+		go c.handleResponse(data)
 	}
 }
 
@@ -248,6 +259,7 @@ type DownloadResponse struct {
 	Type      string                 `json:"type"`
 	Status    string                 `json:"status"`
 	ID        string                 `json:"id"`
+	Event     string                 `json:"event,omitempty"`
 	Data      map[string]interface{} `json:"data,omitempty"`
 	Error     string                 `json:"error,omitempty"`
 	Timestamp string                 `json:"timestamp,omitempty"`
@@ -277,7 +289,7 @@ func (c *Client) handleResponse(data []byte) {
 			logger.Error.Printf("Download request failed: %s", response.Error)
 		}
 	} else if response.Type == "event" {
-		logger.Info.Printf("Received event: %s", response.ID)
+		c.handleEventResponse(response)
 	} else {
 		logger.Error.Printf("Unknown response type: %s", response.Type)
 	}
@@ -289,6 +301,7 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		return
 	}
 
+	// Handle single song downloads
 	if title, hasTitle := data["title"].(string); hasTitle {
 		song := &state.Song{
 			ID:           int64(getInt(data, "id")),
@@ -308,6 +321,7 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		}
 	}
 
+	// Handle search results
 	if results, hasResults := data["results"].([]interface{}); hasResults {
 		searchResults := make([]SearchResult, 0)
 		for _, result := range results {
@@ -329,6 +343,7 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		}
 	}
 
+	// Handle playlist responses (legacy batch downloads)
 	if items, hasItems := data["items"].([]interface{}); hasItems {
 		songs := make([]state.Song, 0)
 		for _, item := range items {
@@ -353,11 +368,49 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 			c.playlistHandler(songs)
 		}
 	}
+
+	// Handle async playlist start response
+	if playlistID, hasPlaylistID := data["playlist_id"].(string); hasPlaylistID {
+		logger.Info.Printf("Started async playlist download: %s", playlistID)
+	}
 }
 
 func (c *Client) handleEventResponse(response DownloadResponse) {
-	// Handle event responses from the downloader
-	logger.Info.Printf("Received event: %s", response.ID)
+	if response.Event == "playlist_item_downloaded" && response.Data != nil {
+		data := response.Data
+
+		// Extract track data
+		if trackData, hasTrack := data["track"].(map[string]interface{}); hasTrack {
+			song := &state.Song{
+				ID:           int64(getInt(trackData, "id")),
+				Title:        getString(trackData, "title"),
+				URL:          getString(trackData, "url"),
+				Platform:     getString(trackData, "platform"),
+				FilePath:     getString(trackData, "filename"),
+				Duration:     getInt(trackData, "duration"),
+				FileSize:     int64(getInt(trackData, "file_size")),
+				ThumbnailURL: getString(trackData, "thumbnail_url"),
+				Artist:       getString(trackData, "artist"),
+				IsStream:     getBool(trackData, "is_stream"),
+			}
+
+			// Extract playlist info
+			var playlistID string
+			if playlistData, hasPlaylist := data["playlist"].(map[string]interface{}); hasPlaylist {
+				playlistID = getString(playlistData, "url") // Use URL as identifier
+			}
+
+			// Call the playlist event handler if available
+			if c.playlistEventHandler != nil {
+				c.playlistEventHandler(playlistID, song)
+			} else if c.downloadHandler != nil {
+				// Fallback to single download handler
+				c.downloadHandler(song)
+			}
+		}
+	} else {
+		logger.Info.Printf("Received event: %s", response.Event)
+	}
 }
 
 func getString(data map[string]interface{}, key string) string {

@@ -57,6 +57,7 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 	url := i.ApplicationCommandData().Options[0].StringValue()
 	userID := i.Member.User.ID
 
+	// Verify user is in voice channel
 	userVS, err := s.State.VoiceState(i.GuildID, userID)
 	if err != nil || userVS == nil || userVS.ChannelID == "" {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -65,6 +66,7 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		return err
 	}
 
+	// Handle voice channel switching
 	userChannelID := userVS.ChannelID
 	currentChannelID := c.stateManager.GetCurrentChannel()
 
@@ -107,20 +109,24 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		}
 	}
 
+	// Start async playlist download
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr(fmt.Sprintf("📜 Downloading playlist from: %s\n⏳ This may take several minutes depending on playlist size...", url)),
+		Content: stringPtr(fmt.Sprintf("📜 Starting playlist download from: %s\n⏳ Songs will be added to queue as they download...", url)),
 	})
 	if err != nil {
 		return err
 	}
 
-	err = c.musicManager.RequestPlaylist(url, userID)
-	if err != nil {
-		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("❌ Failed to request playlist: %v", err)),
-		})
-		return err
-	}
+	// Request playlist download asynchronously
+	go func() {
+		err := c.musicManager.RequestPlaylist(url, userID)
+		if err != nil {
+			// Update the interaction with error message
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr(fmt.Sprintf("❌ Failed to request playlist: %v", err)),
+			})
+		}
+	}()
 
 	return nil
 }

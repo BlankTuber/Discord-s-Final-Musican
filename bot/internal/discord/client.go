@@ -67,6 +67,7 @@ func (c *Client) setupMusicManager() {
 	c.musicManager.SetVoiceConnectionGetter(c.voiceManager.GetVoiceConnection)
 
 	if c.socketClient != nil {
+		// Handle individual song downloads
 		c.socketClient.SetDownloadHandler(func(song *state.Song) {
 			err := c.musicManager.OnDownloadComplete(song)
 			if err != nil {
@@ -74,6 +75,15 @@ func (c *Client) setupMusicManager() {
 			}
 		})
 
+		// Handle playlist streaming events (individual songs as they download)
+		c.socketClient.SetPlaylistEventHandler(func(playlistUrl string, song *state.Song) {
+			err := c.musicManager.OnPlaylistItemComplete(playlistUrl, song)
+			if err != nil {
+				logger.Error.Printf("Failed to handle playlist item: %v", err)
+			}
+		})
+
+		// Handle legacy batch playlist downloads (fallback)
 		c.socketClient.SetPlaylistHandler(func(songs []state.Song) {
 			for _, song := range songs {
 				err := c.musicManager.OnDownloadComplete(&song)
@@ -177,7 +187,7 @@ func (c *Client) registerCommands() {
 	c.commandRouter.Register(commands.NewQueueCommand(c.musicManager, c.stateManager))
 	c.commandRouter.Register(commands.NewSkipCommand(c.musicManager, c.stateManager))
 	c.commandRouter.Register(commands.NewNowPlayingCommand(c.musicManager, c.radioManager, c.stateManager))
-	c.commandRouter.Register(commands.NewClearCommand(c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewClearCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
 
 	c.searchCommand = commands.NewSearchCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager, c.socketClient)
 	c.commandRouter.Register(c.searchCommand)

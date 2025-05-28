@@ -114,13 +114,16 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		return err
 	}
 
-	err = c.musicManager.RequestSong(url, userID)
-	if err != nil {
-		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("❌ Failed to request song: %v", err)),
-		})
-		return err
-	}
+	// Request song download asynchronously
+	go func() {
+		err := c.musicManager.RequestSong(url, userID)
+		if err != nil {
+			// Update the interaction with error message
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr(fmt.Sprintf("❌ Failed to request song: %v", err)),
+			})
+		}
+	}()
 
 	return nil
 }

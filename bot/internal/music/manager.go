@@ -15,24 +15,29 @@ import (
 )
 
 type Manager struct {
-	player       *Player
-	queue        *Queue
-	stateManager *state.Manager
-	dbManager    *config.DatabaseManager
-	socketClient *socket.Client
-	radioManager *radio.Manager
-	vcGetter     func() *discordgo.VoiceConnection
-	mu           sync.RWMutex
+	player             *Player
+	queue              *Queue
+	stateManager       *state.Manager
+	dbManager          *config.DatabaseManager
+	socketClient       *socket.Client
+	radioManager       *radio.Manager
+	vcGetter           func() *discordgo.VoiceConnection
+	activeDownloads    map[string]bool // Track active downloads to prevent duplicates
+	activePlaylistUrls map[string]bool // Track active playlist downloads
+	mu                 sync.RWMutex
+	downloadMu         sync.RWMutex
 }
 
 func NewManager(stateManager *state.Manager, dbManager *config.DatabaseManager, radioManager *radio.Manager, socketClient *socket.Client) *Manager {
 	manager := &Manager{
-		player:       NewPlayer(stateManager),
-		queue:        NewQueue(dbManager),
-		stateManager: stateManager,
-		dbManager:    dbManager,
-		radioManager: radioManager,
-		socketClient: socketClient,
+		player:             NewPlayer(stateManager),
+		queue:              NewQueue(dbManager),
+		stateManager:       stateManager,
+		dbManager:          dbManager,
+		radioManager:       radioManager,
+		socketClient:       socketClient,
+		activeDownloads:    make(map[string]bool),
+		activePlaylistUrls: make(map[string]bool),
 	}
 
 	manager.player.SetOnSongEnd(manager.onSongEnd)
@@ -45,12 +50,30 @@ func (m *Manager) RequestSong(url, requestedBy string) error {
 		return fmt.Errorf("downloader not available")
 	}
 
+	// Check if this URL is already being downloaded
+	m.downloadMu.Lock()
+	if m.activeDownloads[url] {
+		m.downloadMu.Unlock()
+		logger.Info.Printf("Song already being downloaded: %s", url)
+		return nil
+	}
+	m.activeDownloads[url] = true
+	m.downloadMu.Unlock()
+
 	logger.Info.Printf("Requesting download for: %s", url)
 
-	err := m.socketClient.SendDownloadRequest(url, requestedBy)
-	if err != nil {
-		return fmt.Errorf("failed to send download request: %w", err)
-	}
+	go func() {
+		defer func() {
+			m.downloadMu.Lock()
+			delete(m.activeDownloads, url)
+			m.downloadMu.Unlock()
+		}()
+
+		err := m.socketClient.SendDownloadRequest(url, requestedBy)
+		if err != nil {
+			logger.Error.Printf("Failed to send download request: %v", err)
+		}
+	}()
 
 	return nil
 }
@@ -60,35 +83,69 @@ func (m *Manager) RequestPlaylist(url, requestedBy string) error {
 		return fmt.Errorf("downloader not available")
 	}
 
+	// Check if this playlist is already being downloaded
+	m.downloadMu.Lock()
+	if m.activePlaylistUrls[url] {
+		m.downloadMu.Unlock()
+		logger.Info.Printf("Playlist already being downloaded: %s", url)
+		return nil
+	}
+	m.activePlaylistUrls[url] = true
+	m.downloadMu.Unlock()
+
 	logger.Info.Printf("Requesting playlist download for: %s", url)
 
-	err := m.socketClient.SendPlaylistRequest(url, requestedBy)
-	if err != nil {
-		return fmt.Errorf("failed to send playlist request: %w", err)
-	}
+	go func() {
+		defer func() {
+			m.downloadMu.Lock()
+			delete(m.activePlaylistUrls, url)
+			m.downloadMu.Unlock()
+		}()
+
+		err := m.socketClient.SendPlaylistRequest(url, requestedBy)
+		if err != nil {
+			logger.Error.Printf("Failed to send playlist request: %v", err)
+		}
+	}()
 
 	return nil
 }
 
 func (m *Manager) OnDownloadComplete(song *state.Song) error {
-	err := m.queue.Add(song)
-	if err != nil {
-		return fmt.Errorf("failed to add song to queue: %w", err)
-	}
+	// Run queue operations in a goroutine to avoid blocking
+	go func() {
+		err := m.queue.Add(song)
+		if err != nil {
+			logger.Error.Printf("Failed to add song to queue: %v", err)
+			return
+		}
 
-	logger.Info.Printf("Song added to queue: %s by %s", song.Title, song.Artist)
+		logger.Info.Printf("Song added to queue: %s by %s", song.Title, song.Artist)
 
+		// Handle state transitions
+		m.handleQueueAddition()
+	}()
+
+	return nil
+}
+
+func (m *Manager) OnPlaylistItemComplete(playlistUrl string, song *state.Song) error {
+	// Handle individual playlist items as they download
+	return m.OnDownloadComplete(song)
+}
+
+func (m *Manager) handleQueueAddition() {
 	currentState := m.stateManager.GetBotState()
 
 	if currentState == state.StateDJ && !m.player.IsPlaying() {
-		go m.startNextSong()
+		// Already in DJ mode but not playing, start the next song
+		m.startNextSong()
 	} else if currentState == state.StateRadio || currentState == state.StateIdle {
+		// Switch from radio/idle to DJ mode
 		m.radioManager.Stop()
 		m.stateManager.SetBotState(state.StateDJ)
-		go m.startNextSong()
+		m.startNextSong()
 	}
-
-	return nil
 }
 
 func (m *Manager) Start(vc *discordgo.VoiceConnection) error {
@@ -122,57 +179,63 @@ func (m *Manager) Stop() {
 }
 
 func (m *Manager) startNextSong() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Use a goroutine to avoid blocking
+	go func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	if m.stateManager.IsShuttingDown() {
-		return
-	}
+		if m.stateManager.IsShuttingDown() {
+			return
+		}
 
-	currentSong := m.queue.GetCurrent()
-	if currentSong == nil {
-		logger.Info.Println("No songs available to play")
-		return
-	}
+		currentSong := m.queue.GetCurrent()
+		if currentSong == nil {
+			logger.Info.Println("No songs available to play")
+			return
+		}
 
-	vc := m.getVoiceConnection()
-	if vc == nil {
-		logger.Error.Println("No voice connection available for playback")
-		return
-	}
+		vc := m.getVoiceConnection()
+		if vc == nil {
+			logger.Error.Println("No voice connection available for playback")
+			return
+		}
 
-	err := m.player.Play(vc, currentSong)
-	if err != nil {
-		logger.Error.Printf("Failed to start playing song: %v", err)
-	}
+		err := m.player.Play(vc, currentSong)
+		if err != nil {
+			logger.Error.Printf("Failed to start playing song: %v", err)
+		}
+	}()
 }
 
 func (m *Manager) playNext() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Use a goroutine to avoid blocking
+	go func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	if m.stateManager.IsShuttingDown() {
-		return
-	}
+		if m.stateManager.IsShuttingDown() {
+			return
+		}
 
-	nextSong, err := m.queue.Advance()
-	if err != nil {
-		logger.Info.Println("No more songs in queue")
-		return
-	}
+		nextSong, err := m.queue.Advance()
+		if err != nil {
+			logger.Info.Println("No more songs in queue")
+			return
+		}
 
-	vc := m.getVoiceConnection()
-	if vc == nil {
-		logger.Error.Println("No voice connection available for next song")
-		return
-	}
+		vc := m.getVoiceConnection()
+		if vc == nil {
+			logger.Error.Println("No voice connection available for next song")
+			return
+		}
 
-	time.Sleep(500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 
-	err = m.player.Play(vc, nextSong)
-	if err != nil {
-		logger.Error.Printf("Failed to play next song: %v", err)
-	}
+		err = m.player.Play(vc, nextSong)
+		if err != nil {
+			logger.Error.Printf("Failed to play next song: %v", err)
+		}
+	}()
 }
 
 func (m *Manager) onSongEnd() {
@@ -181,10 +244,25 @@ func (m *Manager) onSongEnd() {
 	}
 
 	if m.queue.HasNext() {
-		go m.playNext()
+		m.playNext()
 	} else {
 		logger.Info.Println("Queue finished, no more songs")
-		m.stateManager.SetBotState(state.StateIdle)
+
+		// Handle returning to radio state when queue is empty
+		go func() {
+			time.Sleep(1 * time.Second) // Brief pause before switching modes
+
+			if m.stateManager.IsInIdleChannel() {
+				m.stateManager.SetBotState(state.StateIdle)
+			} else {
+				m.stateManager.SetBotState(state.StateRadio)
+			}
+
+			vc := m.getVoiceConnection()
+			if vc != nil {
+				m.radioManager.Start(vc)
+			}
+		}()
 	}
 }
 

@@ -256,7 +256,7 @@ func (p *Player) getRetryDelay(streamErr StreamError, consecutiveNetworkErrors *
 	switch streamErr.Type {
 	case ErrorEOF:
 		logger.Debug.Println("Stream EOF detected (song change/metadata update)")
-		return 100 * time.Millisecond
+		return 50 * time.Millisecond
 
 	case ErrorRateLimit:
 		logger.Info.Println("Rate limit detected, waiting longer")

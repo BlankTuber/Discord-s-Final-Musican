@@ -123,13 +123,15 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 	// Create a unique search key that doesn't use underscores to avoid parsing issues
 	searchKey := fmt.Sprintf("%s-%s", userID, i.Interaction.ID)
 
-	err = c.socketClient.SendSearchRequest(query, platform, 5)
-	if err != nil {
-		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("❌ Failed to search: %v", err)),
-		})
-		return err
-	}
+	// Send search request asynchronously
+	go func() {
+		err := c.socketClient.SendSearchRequest(query, platform, 5)
+		if err != nil {
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr(fmt.Sprintf("❌ Failed to search: %v", err)),
+			})
+		}
+	}()
 
 	go c.waitForSearchResults(s, i, searchKey, 2*time.Minute)
 
@@ -322,13 +324,15 @@ func (c *SearchCommand) HandleSearchSelection(s *discordgo.Session, i *discordgo
 		return err
 	}
 
-	err = c.musicManager.RequestSong(selectedResult.URL, userID)
-	if err != nil {
-		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr(fmt.Sprintf("❌ Failed to request song: %v", err)),
-		})
-		return err
-	}
+	// Request song download asynchronously
+	go func() {
+		err := c.musicManager.RequestSong(selectedResult.URL, userID)
+		if err != nil {
+			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr(fmt.Sprintf("❌ Failed to request song: %v", err)),
+			})
+		}
+	}()
 
 	c.searchMutex.Lock()
 	delete(c.searchResults, searchKey)
