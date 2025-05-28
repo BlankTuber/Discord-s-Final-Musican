@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"musicbot/internal/music"
 	"musicbot/internal/radio"
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
@@ -11,13 +12,15 @@ import (
 type JoinCommand struct {
 	voiceManager *voice.Manager
 	radioManager *radio.Manager
+	musicManager *music.Manager
 	stateManager *state.Manager
 }
 
-func NewJoinCommand(voiceManager *voice.Manager, radioManager *radio.Manager, stateManager *state.Manager) *JoinCommand {
+func NewJoinCommand(voiceManager *voice.Manager, radioManager *radio.Manager, musicManager *music.Manager, stateManager *state.Manager) *JoinCommand {
 	return &JoinCommand{
 		voiceManager: voiceManager,
 		radioManager: radioManager,
+		musicManager: musicManager,
 		stateManager: stateManager,
 	}
 }
@@ -57,7 +60,13 @@ func (c *JoinCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		return err
 	}
 
-	c.radioManager.Stop()
+	currentState := c.stateManager.GetBotState()
+
+	if currentState == state.StateDJ {
+		c.musicManager.Stop()
+	} else {
+		c.radioManager.Stop()
+	}
 
 	err = c.voiceManager.JoinUser(i.GuildID, i.Member.User.ID)
 	if err != nil {
@@ -69,18 +78,35 @@ func (c *JoinCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 
 	if c.stateManager.IsInIdleChannel() {
 		c.stateManager.SetBotState(state.StateIdle)
+		vc := c.voiceManager.GetVoiceConnection()
+		if vc != nil {
+			c.radioManager.Start(vc)
+		}
+		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("✅ Joined your voice channel and started radio."),
+		})
 	} else {
-		c.stateManager.SetBotState(state.StateRadio)
+		if currentState == state.StateDJ && c.musicManager.GetCurrentSong() != nil {
+			c.stateManager.SetBotState(state.StateDJ)
+			vc := c.voiceManager.GetVoiceConnection()
+			if vc != nil {
+				c.musicManager.Start(vc)
+			}
+			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr("✅ Joined your voice channel and resumed music."),
+			})
+		} else {
+			c.stateManager.SetBotState(state.StateRadio)
+			vc := c.voiceManager.GetVoiceConnection()
+			if vc != nil {
+				c.radioManager.Start(vc)
+			}
+			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr("✅ Joined your voice channel and started radio."),
+			})
+		}
 	}
 
-	vc := c.voiceManager.GetVoiceConnection()
-	if vc != nil {
-		c.radioManager.Start(vc)
-	}
-
-	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content: stringPtr("✅ Joined your voice channel and started radio."),
-	})
 	return err
 }
 

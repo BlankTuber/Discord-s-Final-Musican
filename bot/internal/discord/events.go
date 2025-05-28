@@ -2,6 +2,7 @@ package discord
 
 import (
 	"musicbot/internal/logger"
+	"musicbot/internal/music"
 	"musicbot/internal/radio"
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
@@ -13,21 +14,23 @@ type EventHandler struct {
 	session      *discordgo.Session
 	voiceManager *voice.Manager
 	radioManager *radio.Manager
+	musicManager *music.Manager
 	stateManager *state.Manager
 }
 
-func NewEventHandler(session *discordgo.Session, voiceManager *voice.Manager, radioManager *radio.Manager, stateManager *state.Manager) *EventHandler {
+func NewEventHandler(session *discordgo.Session, voiceManager *voice.Manager, radioManager *radio.Manager, musicManager *music.Manager, stateManager *state.Manager) *EventHandler {
 	return &EventHandler{
 		session:      session,
 		voiceManager: voiceManager,
 		radioManager: radioManager,
+		musicManager: musicManager,
 		stateManager: stateManager,
 	}
 }
 
 func (e *EventHandler) HandleReady(s *discordgo.Session, r *discordgo.Ready) {
 	logger.Info.Printf("Bot ready as %s", r.User.Username)
-	s.UpdateGameStatus(0, "Radio Mode | /join to move me")
+	s.UpdateGameStatus(0, "Radio Mode | /play for music")
 }
 
 func (e *EventHandler) HandleVoiceStateUpdate(s *discordgo.Session, v *discordgo.VoiceStateUpdate) {
@@ -56,6 +59,7 @@ func (e *EventHandler) handleBotVoiceUpdate(v *discordgo.VoiceStateUpdate) {
 			return
 		}
 
+		e.musicManager.Stop()
 		e.radioManager.Stop()
 
 		go func() {
@@ -77,10 +81,23 @@ func (e *EventHandler) handleBotVoiceUpdate(v *discordgo.VoiceStateUpdate) {
 
 	e.stateManager.SetCurrentChannel(v.ChannelID)
 
+	currentState := e.stateManager.GetBotState()
 	if e.stateManager.IsInIdleChannel() {
+		if currentState == state.StateDJ {
+			e.musicManager.Stop()
+		}
 		e.stateManager.SetBotState(state.StateIdle)
 	} else {
-		e.stateManager.SetBotState(state.StateRadio)
+		switch currentState {
+		case state.StateIdle:
+			if e.musicManager.IsPlaying() {
+				e.stateManager.SetBotState(state.StateDJ)
+			} else {
+				e.stateManager.SetBotState(state.StateRadio)
+			}
+		case state.StateRadio:
+		case state.StateDJ:
+		}
 	}
 }
 
@@ -93,10 +110,51 @@ func (e *EventHandler) handleUserVoiceUpdate(v *discordgo.VoiceStateUpdate) {
 	if v.BeforeUpdate != nil && v.BeforeUpdate.ChannelID == currentChannel {
 		go func() {
 			if !e.stateManager.IsShuttingDown() {
-				if err := e.voiceManager.HandleUserLeft(v.GuildID, currentChannel); err != nil {
+				if err := e.handleUserLeft(v.GuildID, currentChannel); err != nil {
 					logger.Error.Printf("Failed to handle user left: %v", err)
 				}
 			}
 		}()
 	}
+}
+
+func (e *EventHandler) handleUserLeft(guildID, channelID string) error {
+	err := e.voiceManager.HandleUserLeft(guildID, channelID)
+	if err != nil {
+		return err
+	}
+
+	if e.stateManager.IsInIdleChannel() {
+		currentState := e.stateManager.GetBotState()
+		if currentState == state.StateDJ {
+			e.musicManager.Stop()
+			e.stateManager.SetBotState(state.StateIdle)
+
+			vc := e.voiceManager.GetVoiceConnection()
+			if vc != nil {
+				e.radioManager.Start(vc)
+			}
+		}
+	} else {
+		currentState := e.stateManager.GetBotState()
+		if currentState == state.StateDJ {
+			e.musicManager.Stop()
+		}
+
+		e.radioManager.Stop()
+
+		err = e.voiceManager.ReturnToIdle(guildID)
+		if err != nil {
+			return err
+		}
+
+		e.stateManager.SetBotState(state.StateIdle)
+
+		vc := e.voiceManager.GetVoiceConnection()
+		if vc != nil {
+			e.radioManager.Start(vc)
+		}
+	}
+
+	return nil
 }

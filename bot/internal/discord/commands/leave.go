@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"musicbot/internal/music"
 	"musicbot/internal/radio"
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
@@ -11,13 +12,15 @@ import (
 type LeaveCommand struct {
 	voiceManager *voice.Manager
 	radioManager *radio.Manager
+	musicManager *music.Manager
 	stateManager *state.Manager
 }
 
-func NewLeaveCommand(voiceManager *voice.Manager, radioManager *radio.Manager, stateManager *state.Manager) *LeaveCommand {
+func NewLeaveCommand(voiceManager *voice.Manager, radioManager *radio.Manager, musicManager *music.Manager, stateManager *state.Manager) *LeaveCommand {
 	return &LeaveCommand{
 		voiceManager: voiceManager,
 		radioManager: radioManager,
+		musicManager: musicManager,
 		stateManager: stateManager,
 	}
 }
@@ -42,7 +45,13 @@ func (c *LeaveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		return err
 	}
 
-	c.radioManager.Stop()
+	currentState := c.stateManager.GetBotState()
+
+	if currentState == state.StateDJ {
+		c.musicManager.Stop()
+	} else {
+		c.radioManager.Stop()
+	}
 
 	if c.stateManager.IsInIdleChannel() {
 		c.stateManager.SetBotState(state.StateIdle)

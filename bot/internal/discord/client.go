@@ -8,7 +8,9 @@ import (
 	"musicbot/internal/config"
 	"musicbot/internal/discord/commands"
 	"musicbot/internal/logger"
+	"musicbot/internal/music"
 	"musicbot/internal/radio"
+	"musicbot/internal/socket"
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
 
@@ -20,12 +22,15 @@ type Client struct {
 	stateManager  *state.Manager
 	voiceManager  *voice.Manager
 	radioManager  *radio.Manager
+	musicManager  *music.Manager
 	commandRouter *commands.Router
 	eventHandler  *EventHandler
 	dbManager     *config.DatabaseManager
+	socketClient  *socket.Client
+	searchCommand *commands.SearchCommand
 }
 
-func NewClient(token string, stateManager *state.Manager, dbManager *config.DatabaseManager) (*Client, error) {
+func NewClient(token string, stateManager *state.Manager, dbManager *config.DatabaseManager, socketClient *socket.Client) (*Client, error) {
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Discord session: %w", err)
@@ -35,23 +40,49 @@ func NewClient(token string, stateManager *state.Manager, dbManager *config.Data
 
 	voiceManager := voice.NewManager(session, stateManager)
 	radioManager := radio.NewManager(stateManager, config.GetDefaultStreams())
+	musicManager := music.NewManager(stateManager, dbManager, radioManager, socketClient)
 	commandRouter := commands.NewRouter(session)
-	eventHandler := NewEventHandler(session, voiceManager, radioManager, stateManager)
+	eventHandler := NewEventHandler(session, voiceManager, radioManager, musicManager, stateManager)
 
 	client := &Client{
 		session:       session,
 		stateManager:  stateManager,
 		voiceManager:  voiceManager,
 		radioManager:  radioManager,
+		musicManager:  musicManager,
 		commandRouter: commandRouter,
 		eventHandler:  eventHandler,
 		dbManager:     dbManager,
+		socketClient:  socketClient,
 	}
 
+	client.setupMusicManager()
 	client.registerCommands()
 	client.registerEventHandlers()
 
 	return client, nil
+}
+
+func (c *Client) setupMusicManager() {
+	c.musicManager.SetVoiceConnectionGetter(c.voiceManager.GetVoiceConnection)
+
+	if c.socketClient != nil {
+		c.socketClient.SetDownloadHandler(func(song *state.Song, requestedBy string) {
+			err := c.musicManager.OnDownloadComplete(song, requestedBy)
+			if err != nil {
+				logger.Error.Printf("Failed to handle download completion: %v", err)
+			}
+		})
+
+		c.socketClient.SetPlaylistHandler(func(songs []state.Song, requestedBy string) {
+			for _, song := range songs {
+				err := c.musicManager.OnDownloadComplete(&song, requestedBy)
+				if err != nil {
+					logger.Error.Printf("Failed to handle playlist song: %v", err)
+				}
+			}
+		})
+	}
 }
 
 func (c *Client) Connect() error {
@@ -103,6 +134,7 @@ func (c *Client) StartIdleMode(guildID string) error {
 func (c *Client) Shutdown(ctx context.Context) error {
 	logger.Info.Println("Shutting down Discord client...")
 
+	c.musicManager.Stop()
 	c.radioManager.Stop()
 
 	time.Sleep(500 * time.Millisecond)
@@ -132,16 +164,46 @@ func (c *Client) GetRadioManager() *radio.Manager {
 	return c.radioManager
 }
 
+func (c *Client) GetMusicManager() *music.Manager {
+	return c.musicManager
+}
+
 func (c *Client) registerCommands() {
-	c.commandRouter.Register(commands.NewJoinCommand(c.voiceManager, c.radioManager, c.stateManager))
-	c.commandRouter.Register(commands.NewLeaveCommand(c.voiceManager, c.radioManager, c.stateManager))
+	c.commandRouter.Register(commands.NewJoinCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewLeaveCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
 	c.commandRouter.Register(commands.NewChangeStreamCommand(c.voiceManager, c.radioManager, c.dbManager))
+	c.commandRouter.Register(commands.NewPlayCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewPlaylistCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewQueueCommand(c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewSkipCommand(c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewNowPlayingCommand(c.musicManager, c.radioManager, c.stateManager))
+	c.commandRouter.Register(commands.NewClearCommand(c.musicManager, c.stateManager))
+
+	c.searchCommand = commands.NewSearchCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager, c.socketClient)
+	c.commandRouter.Register(c.searchCommand)
 }
 
 func (c *Client) registerEventHandlers() {
 	c.session.AddHandler(c.eventHandler.HandleReady)
 	c.session.AddHandler(c.eventHandler.HandleVoiceStateUpdate)
 	c.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		c.commandRouter.Handle(i)
+		if i.Type == discordgo.InteractionApplicationCommand {
+			c.commandRouter.Handle(i)
+		} else if i.Type == discordgo.InteractionMessageComponent {
+			c.handleMessageComponent(s, i)
+		}
 	})
+}
+
+func (c *Client) handleMessageComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	customID := i.MessageComponentData().CustomID
+
+	if len(customID) > 13 && customID[:13] == "search_select" {
+		if c.searchCommand != nil {
+			err := c.searchCommand.HandleSearchSelection(s, i)
+			if err != nil {
+				logger.Error.Printf("Search selection error: %v", err)
+			}
+		}
+	}
 }

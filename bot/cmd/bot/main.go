@@ -62,7 +62,6 @@ func main() {
 
 	stateManager := state.NewManager(botConfig)
 
-	// Register state manager with shutdown manager for coordination
 	shutdownManager.SetStateManager(stateManager)
 
 	socketClient := socket.NewClient(fileConfig.UDSPath)
@@ -74,7 +73,7 @@ func main() {
 		shutdownManager.Register(socketClient)
 	}
 
-	discordClient, err := discord.NewClient(fileConfig.Token, stateManager, dbManager)
+	discordClient, err := discord.NewClient(fileConfig.Token, stateManager, dbManager, socketClient)
 	if err != nil {
 		log.Fatalf("Failed to create Discord client: %v", err)
 	}
@@ -83,6 +82,7 @@ func main() {
 		log.Fatalf("Failed to connect to Discord: %v", err)
 	}
 
+	shutdownManager.Register(discordClient.GetMusicManager())
 	shutdownManager.Register(discordClient.GetRadioManager())
 	shutdownManager.Register(discordClient.GetVoiceManager())
 	shutdownManager.Register(discordClient)

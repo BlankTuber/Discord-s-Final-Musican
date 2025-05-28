@@ -10,6 +10,7 @@ type Manager struct {
 	opState      OperationState
 	voiceState   VoiceState
 	radioState   RadioState
+	musicState   MusicState
 	config       Config
 	lastActivity time.Time
 	shuttingDown bool
@@ -25,6 +26,9 @@ func NewManager(config Config) *Manager {
 		radioState: RadioState{
 			CurrentStream: config.Stream,
 			Volume:        config.Volume,
+		},
+		musicState: MusicState{
+			QueuePosition: 0,
 		},
 		config:       config,
 		lastActivity: time.Now(),
@@ -60,7 +64,7 @@ func (m *Manager) SetShuttingDown(shutting bool) {
 func (m *Manager) IsOperationInProgress() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return !m.shuttingDown && (m.opState.IsJoining || m.opState.IsLeaving || m.opState.IsStreaming)
+	return !m.shuttingDown && (m.opState.IsJoining || m.opState.IsLeaving || m.opState.IsStreaming || m.opState.IsPlaying)
 }
 
 func (m *Manager) SetJoining(joining bool) {
@@ -84,6 +88,15 @@ func (m *Manager) SetStreaming(streaming bool) {
 	defer m.mu.Unlock()
 	if !m.shuttingDown {
 		m.opState.IsStreaming = streaming
+	}
+}
+
+func (m *Manager) SetPlaying(playing bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.shuttingDown {
+		m.opState.IsPlaying = playing
+		m.musicState.IsPlaying = playing
 	}
 }
 
@@ -169,6 +182,42 @@ func (m *Manager) SetRadioPlaying(playing bool) {
 	defer m.mu.Unlock()
 	if !m.shuttingDown {
 		m.radioState.IsPlaying = playing
+	}
+}
+
+func (m *Manager) GetCurrentSong() *Song {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.musicState.CurrentSong
+}
+
+func (m *Manager) SetCurrentSong(song *Song) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.musicState.CurrentSong = song
+	if !m.shuttingDown {
+		m.lastActivity = time.Now()
+	}
+}
+
+func (m *Manager) IsMusicPlaying() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.musicState.IsPlaying
+}
+
+func (m *Manager) GetQueuePosition() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.musicState.QueuePosition
+}
+
+func (m *Manager) SetQueuePosition(position int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.musicState.QueuePosition = position
+	if !m.shuttingDown {
+		m.lastActivity = time.Now()
 	}
 }
 

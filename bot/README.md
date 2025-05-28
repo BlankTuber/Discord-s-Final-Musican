@@ -1,12 +1,15 @@
 # Discord Music Bot
 
-A modular Discord bot for streaming radio in voice channels with automatic idle mode.
+A modular Discord bot for streaming radio and playing music in voice channels with automatic idle mode.
 
 ## Features
 
 - **Idle Mode**: Automatically joins a designated idle voice channel and plays radio
 - **Smart Voice Management**: Automatically follows users and returns to idle when alone
 - **Multiple Radio Streams**: Support for multiple predefined radio streams
+- **Music Playback**: Download and play songs from URLs with queue management
+- **Playlist Support**: Download entire playlists and add them to the queue
+- **Music Search**: Search for songs and select from results
 - **State Management**: Thread-safe state tracking and operation prevention
 - **Graceful Shutdown**: Coordinated shutdown sequence for all components
 - **Connection Stability**: Robust error handling and automatic reconnection
@@ -16,9 +19,32 @@ A modular Discord bot for streaming radio in voice channels with automatic idle 
 
 ## Commands
 
+### Voice Commands
+
 - `/join` - Join your current voice channel
 - `/leave` - Leave current channel (returns to idle)
+
+### Radio Commands
+
 - `/changestream <stream>` - Change the radio stream
+
+### Music Commands
+
+- `/play <url>` - Download and play a song from URL
+- `/playlist <url>` - Download and queue an entire playlist
+- `/search <query>` - Search for songs and select from results
+- `/queue` - Show the current music queue
+- `/nowplaying` - Show what's currently playing
+- `/skip` - Skip the current song
+- `/clear` - Clear the music queue
+
+## Bot States
+
+The bot operates in three main states:
+
+1. **Idle State**: Playing radio in the designated idle channel
+2. **Radio State**: Playing radio in a user channel  
+3. **DJ State**: Playing music from the queue
 
 ## Setup
 
@@ -29,6 +55,7 @@ A modular Discord bot for streaming radio in voice channels with automatic idle 
    - Opus libraries for audio encoding
    - Access to the `../janitor/janitor` executable
    - Access to the `../shared/` directory
+   - Access to a downloader service (for music functionality)
 
 2. **Configuration**:
 
@@ -102,14 +129,15 @@ make run
 
 ```md
 internal/
-├── config/          # Configuration management
+├── config/          # Configuration management and database
 ├── discord/         
 │   ├── commands/    # Command routing and versioning
 │   └── ...          # Discord client and events
 ├── voice/           # Voice connection management
 ├── radio/           # Radio streaming with resilience
+├── music/           # Music playback and queue management
 ├── state/           # State management
-├── socket/          # Socket communication
+├── socket/          # Socket communication with downloader
 ├── shutdown/        # Graceful shutdown coordination
 └── logger/          # Logging utilities
 ```
@@ -133,66 +161,61 @@ make clean
 rm command_hashes.json && make run
 ```
 
-## Command Versioning Example
+## Music Features
 
-**First run (no hash file exists):**
+### Queue Management
 
-```md
-INFO: Command hash file doesn't exist, will create: command_hashes.json
-INFO: Checking for command changes...
-INFO: Command changes detected:
-INFO:   - Creating 3 new commands
-INFO:     + join
-INFO:     + leave  
-INFO:     + changestream
-INFO: Applying command changes...
-INFO: Creating command: join
-INFO: Creating command: leave
-INFO: Creating command: changestream
-INFO: Saved command registry (version 1)
-```
+- Songs are persistently stored in the database
+- Queue position is maintained across bot restarts
+- Automatic playback continues until queue is empty
+- Smart state transitions between radio and music modes
 
-**Subsequent runs (no changes):**
+### Download Integration
 
-```md
-INFO: Loaded command registry with 3 commands (version 1)
-INFO: Checking for command changes...
-INFO: No command changes detected
-INFO: All commands are up to date
-```
+The bot communicates with a separate downloader service via Unix socket:
 
-**When you modify a command:**
+- **Download**: Single song download via `/play` command
+- **Playlist**: Bulk playlist download via `/playlist` command  
+- **Search**: Song search with interactive button selection
 
-```md
-INFO: Loaded command registry with 3 commands (version 1)  
-INFO: Checking for command changes...
-INFO: Command changes detected:
-INFO:   - Updating 1 commands
-INFO:     ~ changestream
-INFO: Applying command changes...
-INFO: Updating command: changestream
-INFO: Saved command registry (version 2)
-```
+### State Transitions
+
+1. **Radio → DJ**: When a song is added to the queue
+2. **DJ → Radio**: When queue is empty or bot returns to idle
+3. **Idle Management**: Bot returns to idle channel when left alone
 
 ## Bot Behavior
 
 1. **On Startup**:
    - Runs janitor to clean up files
    - Connects to socket if available
+   - Loads saved queue from database
    - Checks for command changes and updates only modified commands
    - Joins idle channel and starts radio
-2. **User Joins**: Can use `/join` to move bot to their channel
-3. **User Leaves**: Bot returns to idle if channel becomes empty
-4. **Disconnection**: Automatically reconnects to idle channel with retry logic
-5. **State Conflicts**: Prevents concurrent voice operations
-6. **Stream Issues**: Automatic retry with smart error classification
-7. **Command Management**: Only updates Discord commands when definitions change
-8. **Graceful Shutdown**:
-   - Stops radio stream first
+
+2. **Music Playback**:
+   - Stops radio when music is requested
+   - Automatically plays next song when current finishes
+   - Returns to radio when queue is empty
+   - Handles user channel changes intelligently
+
+3. **User Interaction**:
+   - Can use `/join` to move bot to their channel
+   - Can add songs via `/play`, `/playlist`, or `/search`
+   - Can manage queue with `/skip`, `/queue`, `/clear`
+
+4. **Auto-Management**:
+   - Returns to idle if channel becomes empty
+   - Automatically reconnects to idle channel with retry logic
+   - Prevents concurrent voice operations
+   - Handles stream issues with automatic retry
+
+5. **Graceful Shutdown**:
+   - Stops music/radio playback first
    - Disconnects from voice channels
    - Closes Discord connection
    - Disconnects from socket
-   - Shuts down cleanly within 30 seconds
+   - Saves queue state to database
 
 ## Requirements
 
@@ -200,6 +223,7 @@ INFO: Saved command registry (version 2)
 - Access to designated idle voice channel
 - FFmpeg for audio processing
 - Network access for radio streams
+- Downloader service for music functionality (optional)
 
 ## Troubleshooting
 
@@ -225,6 +249,18 @@ INFO: Saved command registry (version 2)
 - Ensure bot has voice permissions in that channel
 - Make sure the channel belongs to the specified guild
 
+**"Downloader not available"**:
+
+- Check if downloader service is running
+- Verify socket path in config.json
+- Music commands will not work without downloader
+
+**Music files not found**:
+
+- Ensure `../shared/` directory exists and is writable
+- Check that downloader saves files to correct location
+- Verify file permissions
+
 **Radio stream keeps cutting out**:
 
 - Check network connectivity
@@ -243,8 +279,8 @@ INFO: Saved command registry (version 2)
 - Check Discord API permissions for application commands
 - Look for error messages in command update logs
 
-**Shutdown takes too long**:
+**Queue not persisting**:
 
-- Default timeout is 30 seconds
-- Components shut down in priority order
-- Check logs for which component is hanging
+- Check database file permissions
+- Verify database initialization in logs
+- Database file is created automatically if missing
