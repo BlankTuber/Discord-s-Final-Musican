@@ -248,6 +248,16 @@ func (c *Client) registerCommands() {
 		permissions.LevelDJ,
 	))
 
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewDelMsgCommand(c.session),
+		permissions.LevelAdmin,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewVolumeCommand(c.stateManager, c.dbManager),
+		permissions.LevelDJ,
+	))
+
 	c.searchCommand = commands.NewSearchCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager, c.socketClient)
 	c.commandRouter.Register(c.wrapCommand(c.searchCommand, permissions.LevelUser))
 }
