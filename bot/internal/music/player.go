@@ -168,11 +168,13 @@ func (p *Player) Stop() {
 	}
 
 	p.mu.Lock()
-	p.isPlaying = false
-	p.isPaused = false
-	p.currentSong = nil
-	p.stateManager.SetPlaying(false)
-	p.stateManager.SetMusicPaused(false)
+	if p.isPlaying {
+		p.isPlaying = false
+		p.isPaused = false
+		p.currentSong = nil
+		p.stateManager.SetPlaying(false)
+		p.stateManager.SetMusicPaused(false)
+	}
 	p.mu.Unlock()
 }
 
@@ -212,11 +214,17 @@ func (p *Player) Name() string {
 
 func (p *Player) playLoop(vc *discordgo.VoiceConnection, song *state.Song) {
 	defer func() {
-		p.mu.RLock()
+		p.mu.Lock()
 		doneChan := p.doneChan
 		onSongEnd := p.onSongEnd
 		wasPaused := p.isPaused
-		p.mu.RUnlock()
+
+		p.isPlaying = false
+		p.isPaused = false
+		p.currentSong = nil
+		p.stateManager.SetPlaying(false)
+		p.stateManager.SetMusicPaused(false)
+		p.mu.Unlock()
 
 		if doneChan != nil {
 			close(doneChan)

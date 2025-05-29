@@ -15,6 +15,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
+        clean: false
         fetch-depth: 2  # Need at least 2 commits to detect changes
     
     - name: Create shared directory
