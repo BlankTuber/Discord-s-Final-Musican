@@ -9,6 +9,7 @@ import (
 	"musicbot/internal/discord/commands"
 	"musicbot/internal/logger"
 	"musicbot/internal/music"
+	"musicbot/internal/permissions"
 	"musicbot/internal/radio"
 	"musicbot/internal/socket"
 	"musicbot/internal/state"
@@ -18,19 +19,20 @@ import (
 )
 
 type Client struct {
-	session       *discordgo.Session
-	stateManager  *state.Manager
-	voiceManager  *voice.Manager
-	radioManager  *radio.Manager
-	musicManager  *music.Manager
-	commandRouter *commands.Router
-	eventHandler  *EventHandler
-	dbManager     *config.DatabaseManager
-	socketClient  *socket.Client
-	searchCommand *commands.SearchCommand
+	session           *discordgo.Session
+	stateManager      *state.Manager
+	voiceManager      *voice.Manager
+	radioManager      *radio.Manager
+	musicManager      *music.Manager
+	commandRouter     *commands.Router
+	eventHandler      *EventHandler
+	dbManager         *config.DatabaseManager
+	socketClient      *socket.Client
+	searchCommand     *commands.SearchCommand
+	permissionManager *permissions.Manager
 }
 
-func NewClient(token string, stateManager *state.Manager, dbManager *config.DatabaseManager, socketClient *socket.Client) (*Client, error) {
+func NewClient(token string, stateManager *state.Manager, dbManager *config.DatabaseManager, socketClient *socket.Client, permConfig permissions.Config) (*Client, error) {
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Discord session: %w", err)
@@ -43,17 +45,19 @@ func NewClient(token string, stateManager *state.Manager, dbManager *config.Data
 	musicManager := music.NewManager(stateManager, dbManager, radioManager, socketClient)
 	commandRouter := commands.NewRouter(session)
 	eventHandler := NewEventHandler(session, voiceManager, radioManager, musicManager, stateManager)
+	permissionManager := permissions.NewManager(permConfig)
 
 	client := &Client{
-		session:       session,
-		stateManager:  stateManager,
-		voiceManager:  voiceManager,
-		radioManager:  radioManager,
-		musicManager:  musicManager,
-		commandRouter: commandRouter,
-		eventHandler:  eventHandler,
-		dbManager:     dbManager,
-		socketClient:  socketClient,
+		session:           session,
+		stateManager:      stateManager,
+		voiceManager:      voiceManager,
+		radioManager:      radioManager,
+		musicManager:      musicManager,
+		commandRouter:     commandRouter,
+		eventHandler:      eventHandler,
+		dbManager:         dbManager,
+		socketClient:      socketClient,
+		permissionManager: permissionManager,
 	}
 
 	client.setupMusicManager()
@@ -178,21 +182,74 @@ func (c *Client) GetMusicManager() *music.Manager {
 	return c.musicManager
 }
 
+func (c *Client) wrapCommand(cmd commands.Command, level permissions.Level) commands.Command {
+	if level == permissions.LevelUser {
+		return cmd
+	}
+	return commands.NewPermissionWrapper(cmd, level, c.permissionManager)
+}
+
 func (c *Client) registerCommands() {
-	c.commandRouter.Register(commands.NewJoinCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
-	c.commandRouter.Register(commands.NewLeaveCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
-	c.commandRouter.Register(commands.NewChangeStreamCommand(c.voiceManager, c.radioManager, c.dbManager))
-	c.commandRouter.Register(commands.NewPlayCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
-	c.commandRouter.Register(commands.NewPlaylistCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
-	c.commandRouter.Register(commands.NewQueueCommand(c.musicManager, c.stateManager))
-	c.commandRouter.Register(commands.NewSkipCommand(c.musicManager, c.stateManager))
-	c.commandRouter.Register(commands.NewPauseCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
-	c.commandRouter.Register(commands.NewResumeCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
-	c.commandRouter.Register(commands.NewNowPlayingCommand(c.musicManager, c.radioManager, c.stateManager))
-	c.commandRouter.Register(commands.NewClearCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewHelpCommand(c.permissionManager))
+	c.commandRouter.Register(commands.NewPingCommand(c.session))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewJoinCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager),
+		permissions.LevelUser,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewLeaveCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager),
+		permissions.LevelUser,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewChangeStreamCommand(c.voiceManager, c.radioManager, c.dbManager),
+		permissions.LevelDJ,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewPlayCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager),
+		permissions.LevelUser,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewPlaylistCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager),
+		permissions.LevelDJ,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewQueueCommand(c.musicManager, c.stateManager),
+		permissions.LevelUser,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewSkipCommand(c.musicManager, c.stateManager),
+		permissions.LevelUser,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewPauseCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager),
+		permissions.LevelUser,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewResumeCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager),
+		permissions.LevelUser,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewNowPlayingCommand(c.musicManager, c.radioManager, c.stateManager),
+		permissions.LevelUser,
+	))
+
+	c.commandRouter.Register(c.wrapCommand(
+		commands.NewClearCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager),
+		permissions.LevelDJ,
+	))
 
 	c.searchCommand = commands.NewSearchCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager, c.socketClient)
-	c.commandRouter.Register(c.searchCommand)
+	c.commandRouter.Register(c.wrapCommand(c.searchCommand, permissions.LevelUser))
 }
 
 func (c *Client) registerEventHandlers() {

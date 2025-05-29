@@ -7,11 +7,13 @@ import (
 )
 
 type FileConfig struct {
-	Token       string `json:"token"`
-	UDSPath     string `json:"uds_path"`
-	GuildID     string `json:"guild_id"`
-	IdleChannel string `json:"idle_channel"`
-	DBPath      string `json:"db_path"`
+	Token         string `json:"token"`
+	UDSPath       string `json:"uds_path"`
+	GuildID       string `json:"guild_id"`
+	IdleChannel   string `json:"idle_channel"`
+	DBPath        string `json:"db_path"`
+	DJRoleName    string `json:"dj_role_name"`
+	AdminRoleName string `json:"admin_role_name"`
 }
 
 func LoadFromFile(path string) (FileConfig, error) {
@@ -33,6 +35,14 @@ func LoadFromFile(path string) (FileConfig, error) {
 
 	if config.DBPath == "" {
 		config.DBPath = "bot.db"
+	}
+
+	if config.DJRoleName == "" {
+		config.DJRoleName = "DJ"
+	}
+
+	if config.AdminRoleName == "" {
+		config.AdminRoleName = "Admin"
 	}
 
 	return config, nil

@@ -3,5 +3,7 @@
     "uds_path": "/tmp/downloader.sock",
     "guild_id": "YOUR_GUILD_ID_HERE",
     "idle_channel": "YOUR_IDLE_CHANNEL_ID_HERE",
-    "db_path": "bot.db"
+    "db_path": "bot.db",
+    "dj_role_name": "DJ",
+    "admin_role_name": "Admin"
 }

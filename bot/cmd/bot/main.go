@@ -12,6 +12,7 @@ import (
 	"musicbot/internal/config"
 	"musicbot/internal/discord"
 	"musicbot/internal/logger"
+	"musicbot/internal/permissions"
 	"musicbot/internal/shutdown"
 	"musicbot/internal/socket"
 	"musicbot/internal/state"
@@ -73,7 +74,12 @@ func main() {
 		shutdownManager.Register(socketClient)
 	}
 
-	discordClient, err := discord.NewClient(fileConfig.Token, stateManager, dbManager, socketClient)
+	permConfig := permissions.Config{
+		DJRoleName:    fileConfig.DJRoleName,
+		AdminRoleName: fileConfig.AdminRoleName,
+	}
+
+	discordClient, err := discord.NewClient(fileConfig.Token, stateManager, dbManager, socketClient, permConfig)
 	if err != nil {
 		log.Fatalf("Failed to create Discord client: %v", err)
 	}
