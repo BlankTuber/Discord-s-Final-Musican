@@ -14,7 +14,6 @@ def init(cfg):
     
     register_default_handlers()
     
-    # Register for events from ytdlp_handler
     ytdlp_handler.register_event_callback(handle_ytdlp_event)
     
     print("UDS handlers module initialized")
@@ -27,7 +26,6 @@ def register_handler(command, handler_func):
     return True
 
 def register_event_listener(listener_func):
-    """Register a function to listen for events"""
     global _event_listeners
     if callable(listener_func) and listener_func not in _event_listeners:
         _event_listeners.append(listener_func)
@@ -35,7 +33,6 @@ def register_event_listener(listener_func):
     return False
 
 def handle_ytdlp_event(event_type, event_data):
-    """Handle events from ytdlp_handler and forward them to listeners"""
     for listener in _event_listeners:
         try:
             listener(event_type, event_data)
@@ -59,7 +56,11 @@ def process_request(request, config):
     params = request.get("params", {})
     
     start_time = time.time()
-    print(f"UDS: Received request - Command: {command}, ID: {request_id}")
+    
+    if command == "ping" and params.get("keepalive"):
+        print(f"UDS: Received keepalive ping - ID: {request_id}")
+    else:
+        print(f"UDS: Received request - Command: {command}, ID: {request_id}")
     
     handler = _command_handlers.get(command)
     
@@ -71,10 +72,19 @@ def process_request(request, config):
         )
     
     try:
-        print(f"UDS: Processing {command} with params: {json.dumps(params, default=str)}")
+        if command == "ping" and params.get("keepalive"):
+            print(f"UDS: Processing keepalive ping")
+        else:
+            print(f"UDS: Processing {command} with params: {json.dumps(params, default=str)}")
+        
         result = handler(params, config)
         elapsed = time.time() - start_time
-        print(f"UDS: {command} processed successfully in {elapsed:.2f} seconds")
+        
+        if command == "ping" and params.get("keepalive"):
+            print(f"UDS: Keepalive ping processed successfully in {elapsed:.3f} seconds")
+        else:
+            print(f"UDS: {command} processed successfully in {elapsed:.2f} seconds")
+        
         return protocol.create_success_response(request_id, result)
     except Exception as e:
         elapsed = time.time() - start_time
@@ -194,8 +204,6 @@ def handle_get_playlist_download_status(params, config):
         print("UDS: playlist_id is required for get_playlist_download_status")
         raise ValueError("playlist_id is required")
     
-    # This is a placeholder for now - we would need to track download status
-    # In a real implementation, this would check a database or in-memory status
     return {
         "playlist_id": playlist_id,
         "status": "in_progress",
@@ -307,9 +315,21 @@ def handle_search(params, config):
     return results
 
 def handle_ping(params, config):
-    print("UDS: Received ping request")
-    return {
+    is_keepalive = params.get("keepalive", False)
+    timestamp = params.get("timestamp", "none")
+    
+    if is_keepalive:
+        print("UDS: Received keepalive ping request")
+    else:
+        print("UDS: Received ping request")
+    
+    response = {
         "message": "pong",
-        "timestamp": params.get("timestamp", "none"),
+        "timestamp": timestamp,
         "server_time": time.time()
     }
+    
+    if is_keepalive:
+        response["keepalive"] = True
+    
+    return response

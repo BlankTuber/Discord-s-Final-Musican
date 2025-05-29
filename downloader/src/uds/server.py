@@ -11,13 +11,12 @@ _socket = None
 _thread = None
 _running = False
 _config = {}
-_clients = {}  # Dictionary to track active client connections
+_clients = {}
 
 def init(cfg):
     global _config
     _config.update(cfg)
     
-    # Register as an event listener to forward events to clients
     handlers.register_event_listener(handle_event)
     
     logger.logger.info("UDS server module initialized")
@@ -56,7 +55,6 @@ def stop():
     try:
         _running = False
         
-        # Close all client connections
         for client_id, client_data in list(_clients.items()):
             try:
                 if client_data['socket']:
@@ -90,16 +88,15 @@ def _server_loop():
             client, _ = _socket.accept()
             _socket.settimeout(None)
             
-            # Generate a unique client ID
             client_id = str(uuid.uuid4())
             
             logger.logger.info(f"New client connection accepted (ID: {client_id})")
             
-            # Store client connection
             _clients[client_id] = {
                 'socket': client,
                 'connected': True,
-                'last_activity': time.time()
+                'last_activity': time.time(),
+                'last_keepalive': time.time()
             }
             
             client_thread = threading.Thread(
@@ -124,22 +121,22 @@ def _handle_client(client_socket, client_id):
     global _clients
     
     try:
-        client_socket.settimeout(300)  # 5 minute timeout for client operations
+        client_socket.settimeout(600)  # 10 minute initial timeout
         logger.logger.info(f"Starting client handler for {client_id}")
         
         while _running and client_id in _clients and _clients[client_id]['connected']:
             try:
-                logger.logger.info(f"Reading request from client {client_id}...")
+                logger.logger.debug(f"Reading request from client {client_id}...")
                 
                 data = utils.read_json_message(client_socket)
                 if not data:
                     logger.logger.warning(f"No data received from client {client_id}, closing connection")
                     break
                 
-                logger.logger.info(f"Received data of length {len(data)} from client {client_id}")
+                logger.logger.debug(f"Received data of length {len(data)} from client {client_id}")
                 
-                # Update activity timestamp
-                _clients[client_id]['last_activity'] = time.time()
+                current_time = time.time()
+                _clients[client_id]['last_activity'] = current_time
                 
                 request = protocol.parse_request(data)
                 if not request:
@@ -150,6 +147,27 @@ def _handle_client(client_socket, client_id):
                 
                 command = request.get("command", "unknown")
                 request_id = request.get("id", "unknown")
+                
+                # Handle keepalive pings specially
+                if command == "ping":
+                    params = request.get("params", {})
+                    if params.get("keepalive"):
+                        logger.logger.debug(f"Handling keepalive ping from client {client_id}")
+                        _clients[client_id]['last_keepalive'] = current_time
+                        
+                        # Reset socket timeout for active connections
+                        client_socket.settimeout(600)  # Reset to 10 minutes
+                        
+                        # Send immediate pong response
+                        keepalive_response = protocol.create_success_response(request_id, {
+                            "message": "pong",
+                            "timestamp": params.get("timestamp", "none"),
+                            "server_time": time.time(),
+                            "keepalive": True
+                        })
+                        utils.send_json_message(client_socket, keepalive_response)
+                        continue
+                
                 logger.logger.info(f"Handling request from client {client_id} - Command: {command}, ID: {request_id}")
                 
                 response = handlers.process_request(request, _config)
@@ -158,9 +176,30 @@ def _handle_client(client_socket, client_id):
                 utils.send_json_message(client_socket, response)
                 logger.logger.info(f"Request handled - Command: {command}, ID: {request_id}, Client: {client_id}")
                 
+                # Check if we should adjust timeout based on recent activity
+                time_since_keepalive = current_time - _clients[client_id]['last_keepalive']
+                if time_since_keepalive < 300:  # If keepalive within 5 minutes, extend timeout
+                    client_socket.settimeout(600)  # 10 minutes
+                else:
+                    client_socket.settimeout(300)  # 5 minutes for inactive connections
+                
             except socket.timeout:
-                logger.logger.warning(f"Client {client_id} socket timed out waiting for data")
-                break
+                current_time = time.time()
+                time_since_activity = current_time - _clients[client_id]['last_activity']
+                time_since_keepalive = current_time - _clients[client_id]['last_keepalive']
+                
+                # If we haven't seen keepalive in a while, close connection
+                if time_since_keepalive > 600:  # 10 minutes without keepalive
+                    logger.logger.warning(f"Client {client_id} timeout - no keepalive in {time_since_keepalive:.0f} seconds")
+                    break
+                elif time_since_activity > 300:  # 5 minutes without any activity
+                    logger.logger.warning(f"Client {client_id} timeout - no activity in {time_since_activity:.0f} seconds")
+                    break
+                else:
+                    logger.logger.debug(f"Client {client_id} socket timeout, but recent activity detected, continuing...")
+                    client_socket.settimeout(120)  # Shorter timeout to check more frequently
+                    continue
+                    
             except ConnectionResetError:
                 logger.logger.warning(f"Client {client_id} connection reset")
                 break
@@ -182,30 +221,25 @@ def _handle_client(client_socket, client_id):
         except:
             pass
         
-        # Remove client from active clients
         if client_id in _clients:
             del _clients[client_id]
         
         logger.logger.info(f"Client {client_id} connection closed")
 
 def handle_event(event_type, event_data):
-    """Handle events from the ytdlp_handler and forward to connected clients"""
     global _clients
     
     logger.logger.info(f"Received event: {event_type}")
     
-    # Create an event message
     event_message = protocol.create_event_message(event_type, event_data)
     
-    # Send to all connected clients
     for client_id, client_data in list(_clients.items()):
         try:
             if client_data['connected']:
-                logger.logger.info(f"Sending event {event_type} to client {client_id}")
+                logger.logger.debug(f"Sending event {event_type} to client {client_id}")
                 utils.send_json_message(client_data['socket'], event_message)
             else:
                 logger.logger.debug(f"Skipping disconnected client {client_id}")
         except Exception as e:
             logger.logger.error(f"Error sending event to client {client_id}: {e}")
-            # Mark client as disconnected
             client_data['connected'] = False

@@ -40,12 +40,18 @@ type Client struct {
 	mu                   sync.RWMutex
 	pendingRequests      map[string]chan interface{}
 	lastDownloaderPing   time.Time
+	pingTicker           *time.Ticker
+	stopPing             chan struct{}
+	reconnectAttempts    int
+	maxReconnectAttempts int
 }
 
 func NewClient(socketPath string) *Client {
 	return &Client{
-		socketPath:      socketPath,
-		pendingRequests: make(map[string]chan interface{}),
+		socketPath:           socketPath,
+		pendingRequests:      make(map[string]chan interface{}),
+		stopPing:             make(chan struct{}),
+		maxReconnectAttempts: 5,
 	}
 }
 
@@ -81,70 +87,191 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("failed to connect to socket: %w", err)
 	}
 
+	c.mu.Lock()
 	c.conn = conn
 	c.connected = true
-	c.lastDownloaderPing = time.Now() // Initialize on connection
+	c.lastDownloaderPing = time.Now()
+	c.reconnectAttempts = 0
+	c.mu.Unlock()
 
 	if c.resetPendingHandler != nil {
 		c.resetPendingHandler()
 	}
 
 	go c.listenForResponses()
-	go c.startDownloaderPingRoutine() // Start the periodic ping routine
+	c.startKeepaliveRoutine()
 
 	logger.Info.Println("Successfully connected to socket")
 	return nil
 }
 
-func (c *Client) startDownloaderPingRoutine() {
-	ticker := time.NewTicker(2 * time.Minute) // Ping every 2 minutes
-	defer ticker.Stop()
+func (c *Client) startKeepaliveRoutine() {
+	c.mu.Lock()
+	if c.pingTicker != nil {
+		c.pingTicker.Stop()
+	}
+	c.pingTicker = time.NewTicker(90 * time.Second) // Ping every 90 seconds
+	c.mu.Unlock()
 
-	for range ticker.C {
-		if !c.IsConnected() {
-			logger.Info.Println("Downloader ping routine: Not connected to downloader, skipping ping.")
-			continue
-		}
+	go func() {
+		defer func() {
+			c.mu.Lock()
+			if c.pingTicker != nil {
+				c.pingTicker.Stop()
+				c.pingTicker = nil
+			}
+			c.mu.Unlock()
+		}()
 
-		// Send a ping request
-		requestID := c.generateRequestID()
-		request := map[string]interface{}{
-			"command": "ping",
-			"id":      requestID,
-			"params": map[string]interface{}{
-				"timestamp": time.Now().Format(time.RFC3339), // Send current timestamp
-			},
-		}
+		for {
+			select {
+			case <-c.pingTicker.C:
+				if !c.IsConnected() {
+					logger.Info.Println("Keepalive: Not connected to downloader, stopping keepalive")
+					return
+				}
 
-		data, err := json.Marshal(request)
-		if err != nil {
-			logger.Error.Printf("Downloader ping routine: Failed to marshal ping request: %v", err)
-			continue
-		}
+				err := c.sendKeepalivePing()
+				if err != nil {
+					logger.Error.Printf("Keepalive ping failed: %v", err)
+					c.handleConnectionError(err)
+					return
+				}
 
-		// We don't need to wait for a response for this periodic ping,
-		// but we should handle potential send errors.
-		err = c.sendMessage(data)
-		if err != nil {
-			logger.Error.Printf("Downloader ping routine: Failed to send ping request: %v", err)
-			// If sending fails, it might mean the connection is dead.
-			// The listenForResponses goroutine will eventually detect this.
-			continue
+			case <-c.stopPing:
+				logger.Debug.Println("Keepalive routine stopped")
+				return
+			}
 		}
-		logger.Debug.Println("Downloader ping routine: Sent periodic ping.")
+	}()
+}
+
+func (c *Client) sendKeepalivePing() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	requestID := c.generateRequestID()
+	request := map[string]interface{}{
+		"command": "ping",
+		"id":      requestID,
+		"params": map[string]interface{}{
+			"timestamp": time.Now().Format(time.RFC3339),
+			"keepalive": true,
+		},
+	}
+
+	data, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("failed to marshal keepalive ping: %w", err)
+	}
+
+	responseChan := make(chan interface{}, 1)
+	c.mu.Lock()
+	c.pendingRequests[requestID] = responseChan
+	c.mu.Unlock()
+
+	defer func() {
+		c.mu.Lock()
+		delete(c.pendingRequests, requestID)
+		c.mu.Unlock()
+	}()
+
+	err = c.sendMessage(data)
+	if err != nil {
+		return fmt.Errorf("failed to send keepalive ping: %w", err)
+	}
+
+	select {
+	case response := <-responseChan:
+		if responseData, ok := response.(map[string]interface{}); ok {
+			if msg, exists := responseData["message"].(string); exists && msg == "pong" {
+				c.mu.Lock()
+				c.lastDownloaderPing = time.Now()
+				c.mu.Unlock()
+				logger.Debug.Println("Keepalive pong received")
+				return nil
+			}
+		}
+		return fmt.Errorf("unexpected keepalive response format")
+
+	case <-ctx.Done():
+		return fmt.Errorf("keepalive ping timeout")
 	}
 }
 
+func (c *Client) handleConnectionError(err error) {
+	c.mu.Lock()
+	wasConnected := c.connected
+	c.connected = false
+	c.mu.Unlock()
+
+	if !wasConnected {
+		return // Already handling disconnection
+	}
+
+	logger.Error.Printf("Connection error detected: %v", err)
+
+	// Stop keepalive routine
+	select {
+	case c.stopPing <- struct{}{}:
+	default:
+	}
+
+	// Close current connection
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+
+	// Attempt reconnection
+	go c.attemptReconnection()
+}
+
+func (c *Client) attemptReconnection() {
+	for attempt := 1; attempt <= c.maxReconnectAttempts; attempt++ {
+		delay := time.Duration(attempt*attempt) * time.Second // Exponential backoff
+		logger.Info.Printf("Attempting reconnection %d/%d in %v...", attempt, c.maxReconnectAttempts, delay)
+
+		time.Sleep(delay)
+
+		err := c.Connect()
+		if err == nil {
+			logger.Info.Printf("Reconnection successful after %d attempts", attempt)
+			return
+		}
+
+		logger.Error.Printf("Reconnection attempt %d failed: %v", attempt, err)
+	}
+
+	logger.Error.Printf("Failed to reconnect after %d attempts", c.maxReconnectAttempts)
+}
+
 func (c *Client) Disconnect() error {
+	c.mu.Lock()
 	if !c.connected || c.conn == nil {
+		c.mu.Unlock()
 		return nil
 	}
+	c.connected = false
+	c.mu.Unlock()
 
 	logger.Info.Println("Disconnecting from socket...")
 
+	// Stop keepalive routine
+	select {
+	case c.stopPing <- struct{}{}:
+	default:
+	}
+
+	c.mu.Lock()
+	if c.pingTicker != nil {
+		c.pingTicker.Stop()
+		c.pingTicker = nil
+	}
+	c.mu.Unlock()
+
 	err := c.conn.Close()
 	c.conn = nil
-	c.connected = false
 
 	if err != nil {
 		logger.Error.Printf("Error disconnecting from socket: %v", err)
@@ -156,6 +283,8 @@ func (c *Client) Disconnect() error {
 }
 
 func (c *Client) IsConnected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.connected && c.conn != nil
 }
 
@@ -187,7 +316,7 @@ func (c *Client) SendDownloadRequest(url, requestedBy string) error {
 
 	err = c.sendMessage(data)
 	if err != nil {
-		c.connected = false
+		c.handleConnectionError(err)
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
@@ -225,7 +354,7 @@ func (c *Client) SendPlaylistRequest(url, requestedBy string, limit int) error {
 
 	err = c.sendMessage(data)
 	if err != nil {
-		c.connected = false
+		c.handleConnectionError(err)
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
@@ -254,7 +383,7 @@ func (c *Client) SendSearchRequest(query string, platform string, limit int) err
 
 	err = c.sendMessage(data)
 	if err != nil {
-		c.connected = false
+		c.handleConnectionError(err)
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 
@@ -266,18 +395,26 @@ func (c *Client) sendMessage(data []byte) error {
 		return fmt.Errorf("message too large: %d bytes", len(data))
 	}
 
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("no connection available")
+	}
+
 	messageLen := uint32(len(data))
 	lengthBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lengthBuf, messageLen)
 
-	c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 
-	_, err := c.conn.Write(lengthBuf)
+	_, err := conn.Write(lengthBuf)
 	if err != nil {
 		return fmt.Errorf("failed to write length: %w", err)
 	}
 
-	_, err = c.conn.Write(data)
+	_, err = conn.Write(data)
 	if err != nil {
 		return fmt.Errorf("failed to write data: %w", err)
 	}
@@ -286,10 +423,18 @@ func (c *Client) sendMessage(data []byte) error {
 }
 
 func (c *Client) readMessage() ([]byte, error) {
-	c.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return nil, fmt.Errorf("no connection available")
+	}
+
+	conn.SetReadDeadline(time.Now().Add(10 * time.Minute)) // Longer read timeout
 
 	lengthBuf := make([]byte, 4)
-	_, err := io.ReadFull(c.conn, lengthBuf)
+	_, err := io.ReadFull(conn, lengthBuf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read length: %w", err)
 	}
@@ -308,7 +453,8 @@ func (c *Client) readMessage() ([]byte, error) {
 
 	totalRead := 0
 	for totalRead < int(messageLen) {
-		n, err := c.conn.Read(messageBuf[totalRead:])
+		conn.SetReadDeadline(time.Now().Add(2 * time.Minute)) // Reset deadline for each chunk
+		n, err := conn.Read(messageBuf[totalRead:])
 		if err != nil {
 			return nil, fmt.Errorf("failed to read message data at offset %d: %w", totalRead, err)
 		}
@@ -323,18 +469,15 @@ func (c *Client) listenForResponses() {
 		if r := recover(); r != nil {
 			logger.Error.Printf("Socket listener panic: %v", r)
 		}
-		if c.connected {
-			c.connected = false
-			logger.Info.Println("Socket listener stopped")
-		}
+		c.handleConnectionError(fmt.Errorf("listener stopped"))
 	}()
 
-	for c.connected {
+	for c.IsConnected() {
 		data, err := c.readMessage()
 		if err != nil {
-			if c.connected {
+			if c.IsConnected() {
 				logger.Error.Printf("Socket read error: %v", err)
-				c.connected = false
+				c.handleConnectionError(err)
 			}
 			return
 		}
@@ -400,14 +543,14 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		return
 	}
 
-	// Check if this is a response to a 'ping' command
-	if response.ID != "" { // Assuming 'ID' is used for command responses
+	// Check if this is a response to a pending request
+	if response.ID != "" {
 		c.mu.Lock()
 		if ch, ok := c.pendingRequests[response.ID]; ok {
-			ch <- response.Data // Send the data back to the waiting channel
+			ch <- response.Data
 			delete(c.pendingRequests, response.ID)
 			c.mu.Unlock()
-			return // Handled as a pending request, no further processing needed here
+			return
 		}
 		c.mu.Unlock()
 	}
@@ -569,7 +712,7 @@ func (c *Client) Ping() error {
 
 	err = c.sendMessage(data)
 	if err != nil {
-		c.connected = false
+		c.handleConnectionError(err)
 		return err
 	}
 
@@ -614,7 +757,7 @@ func (c *Client) SendPingWithResponse() (map[string]interface{}, error) {
 		c.mu.Lock()
 		delete(c.pendingRequests, requestID)
 		c.mu.Unlock()
-		c.connected = false
+		c.handleConnectionError(err)
 		return nil, fmt.Errorf("failed to send ping request: %w", err)
 	}
 
@@ -624,7 +767,7 @@ func (c *Client) SendPingWithResponse() (map[string]interface{}, error) {
 			return result, nil
 		}
 		return nil, fmt.Errorf("unexpected response format for ping")
-	case <-time.After(5 * time.Second): // Timeout for response
+	case <-time.After(5 * time.Second):
 		c.mu.Lock()
 		delete(c.pendingRequests, requestID)
 		c.mu.Unlock()
@@ -640,7 +783,7 @@ func (c *Client) GetDownloaderStatus() string {
 		return "🔴 Disconnected"
 	}
 
-	if time.Since(c.lastDownloaderPing) > 3*time.Minute { // If no pong in 3 minutes
+	if time.Since(c.lastDownloaderPing) > 3*time.Minute {
 		return "🟠 Unresponsive (No pong in 3 minutes)"
 	}
 
