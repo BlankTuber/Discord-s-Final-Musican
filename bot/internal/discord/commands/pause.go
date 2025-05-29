@@ -10,15 +10,15 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
-type LeaveCommand struct {
+type PauseCommand struct {
 	voiceManager *voice.Manager
 	radioManager *radio.Manager
 	musicManager *music.Manager
 	stateManager *state.Manager
 }
 
-func NewLeaveCommand(voiceManager *voice.Manager, radioManager *radio.Manager, musicManager *music.Manager, stateManager *state.Manager) *LeaveCommand {
-	return &LeaveCommand{
+func NewPauseCommand(voiceManager *voice.Manager, radioManager *radio.Manager, musicManager *music.Manager, stateManager *state.Manager) *PauseCommand {
+	return &PauseCommand{
 		voiceManager: voiceManager,
 		radioManager: radioManager,
 		musicManager: musicManager,
@@ -26,19 +26,19 @@ func NewLeaveCommand(voiceManager *voice.Manager, radioManager *radio.Manager, m
 	}
 }
 
-func (c *LeaveCommand) Name() string {
-	return "leave"
+func (c *PauseCommand) Name() string {
+	return "pause"
 }
 
-func (c *LeaveCommand) Description() string {
-	return "Leave current voice channel"
+func (c *PauseCommand) Description() string {
+	return "Pause music and switch to idle mode"
 }
 
-func (c *LeaveCommand) Options() []*discordgo.ApplicationCommandOption {
+func (c *PauseCommand) Options() []*discordgo.ApplicationCommandOption {
 	return []*discordgo.ApplicationCommandOption{}
 }
 
-func (c *LeaveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+func (c *PauseCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCreate) error {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 	})
@@ -48,14 +48,42 @@ func (c *LeaveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 
 	currentState := c.stateManager.GetBotState()
 
+	if currentState != state.StateDJ {
+		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ No music is currently playing."),
+		})
+		return err
+	}
+
+	if !c.musicManager.IsPlaying() {
+		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ No song is currently playing."),
+		})
+		return err
+	}
+
+	if c.musicManager.IsPaused() {
+		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ Music is already paused."),
+		})
+		return err
+	}
+
+	currentSong := c.musicManager.GetCurrentSong()
+	if currentSong == nil {
+		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content: stringPtr("❌ No song is currently playing."),
+		})
+		return err
+	}
+
 	c.stateManager.SetManualOperationActive(true)
 	defer c.stateManager.SetManualOperationActive(false)
 
 	c.musicManager.ExecuteWithDisabledHandlers(func() {
-		if currentState == state.StateDJ {
-			c.musicManager.Stop()
-		} else {
-			c.radioManager.Stop()
+		err = c.musicManager.Pause()
+		if err != nil {
+			return
 		}
 
 		time.Sleep(500 * time.Millisecond)
@@ -64,6 +92,7 @@ func (c *LeaveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 			c.stateManager.SetBotState(state.StateIdle)
 
 			time.Sleep(500 * time.Millisecond)
+
 			vc := c.voiceManager.GetVoiceConnection()
 			if vc != nil && !c.radioManager.IsPlaying() {
 				c.radioManager.Start(vc)
@@ -77,6 +106,7 @@ func (c *LeaveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 			c.stateManager.SetBotState(state.StateIdle)
 
 			time.Sleep(500 * time.Millisecond)
+
 			vc := c.voiceManager.GetVoiceConnection()
 			if vc != nil && !c.radioManager.IsPlaying() {
 				c.radioManager.Start(vc)
@@ -86,20 +116,13 @@ func (c *LeaveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 
 	if err != nil {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to return to idle channel."),
+			Content: stringPtr("❌ Failed to pause music."),
 		})
 		return err
 	}
 
-	if c.stateManager.IsInIdleChannel() {
-		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("✅ This is the idle channel. Radio will continue playing."),
-		})
-	} else {
-		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("✅ Returned to idle channel and resumed radio."),
-		})
-	}
-
+	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: stringPtr("⏸️ Music paused. Use `/resume` to continue playing."),
+	})
 	return err
 }

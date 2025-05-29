@@ -186,6 +186,8 @@ func (c *Client) registerCommands() {
 	c.commandRouter.Register(commands.NewPlaylistCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
 	c.commandRouter.Register(commands.NewQueueCommand(c.musicManager, c.stateManager))
 	c.commandRouter.Register(commands.NewSkipCommand(c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewPauseCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
+	c.commandRouter.Register(commands.NewResumeCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
 	c.commandRouter.Register(commands.NewNowPlayingCommand(c.musicManager, c.radioManager, c.stateManager))
 	c.commandRouter.Register(commands.NewClearCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager))
 

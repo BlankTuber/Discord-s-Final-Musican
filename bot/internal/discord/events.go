@@ -125,16 +125,63 @@ func (e *EventHandler) handleUserVoiceUpdate(v *discordgo.VoiceStateUpdate) {
 }
 
 func (e *EventHandler) handleUserLeft(guildID, channelID string) error {
-	err := e.voiceManager.HandleUserLeft(guildID, channelID)
-	if err != nil {
-		return err
+	if e.stateManager.IsShuttingDown() {
+		logger.Debug.Println("Ignoring user left event during shutdown")
+		return nil
 	}
 
 	if e.stateManager.IsInIdleChannel() {
-		currentState := e.stateManager.GetBotState()
-		if currentState == state.StateDJ {
-			e.musicManager.Stop()
+		logger.Info.Println("Already in idle channel, no action needed for voice operations")
+
+		e.stateManager.SetManualOperationActive(true)
+		defer e.stateManager.SetManualOperationActive(false)
+
+		e.musicManager.ExecuteWithDisabledHandlers(func() {
+			currentState := e.stateManager.GetBotState()
+			if currentState == state.StateDJ {
+				e.musicManager.Stop()
+				time.Sleep(500 * time.Millisecond)
+				e.stateManager.SetBotState(state.StateIdle)
+
+				time.Sleep(500 * time.Millisecond)
+				vc := e.voiceManager.GetVoiceConnection()
+				if vc != nil && !e.radioManager.IsPlaying() {
+					e.radioManager.Start(vc)
+				}
+			}
+		})
+		return nil
+	}
+
+	userCount, err := e.voiceManager.GetConnection().CheckChannelUsers(guildID, channelID)
+	if err != nil {
+		logger.Error.Printf("Error checking channel users: %v", err)
+		return err
+	}
+
+	logger.Info.Printf("Channel %s has %d users remaining", channelID, userCount)
+
+	if userCount == 0 {
+		logger.Info.Println("Channel is empty, stopping music and returning to idle")
+
+		e.stateManager.SetManualOperationActive(true)
+		defer e.stateManager.SetManualOperationActive(false)
+
+		e.musicManager.ExecuteWithDisabledHandlers(func() {
+			currentState := e.stateManager.GetBotState()
+			if currentState == state.StateDJ {
+				e.musicManager.Stop()
+			}
+
+			e.radioManager.Stop()
+
 			time.Sleep(500 * time.Millisecond)
+
+			err = e.voiceManager.ReturnToIdle(guildID)
+			if err != nil {
+				return
+			}
+
 			e.stateManager.SetBotState(state.StateIdle)
 
 			time.Sleep(500 * time.Millisecond)
@@ -142,30 +189,8 @@ func (e *EventHandler) handleUserLeft(guildID, channelID string) error {
 			if vc != nil && !e.radioManager.IsPlaying() {
 				e.radioManager.Start(vc)
 			}
-		}
-	} else {
-		currentState := e.stateManager.GetBotState()
-		if currentState == state.StateDJ {
-			e.musicManager.Stop()
-		}
-
-		e.radioManager.Stop()
-
-		time.Sleep(500 * time.Millisecond)
-
-		err = e.voiceManager.ReturnToIdle(guildID)
-		if err != nil {
-			return err
-		}
-
-		e.stateManager.SetBotState(state.StateIdle)
-
-		time.Sleep(500 * time.Millisecond)
-		vc := e.voiceManager.GetVoiceConnection()
-		if vc != nil && !e.radioManager.IsPlaying() {
-			e.radioManager.Start(vc)
-		}
+		})
 	}
 
-	return nil
+	return err
 }

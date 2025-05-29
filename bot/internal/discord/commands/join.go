@@ -63,15 +63,48 @@ func (c *JoinCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 
 	currentState := c.stateManager.GetBotState()
 
-	if currentState == state.StateDJ {
-		c.musicManager.Stop()
-	} else {
-		c.radioManager.Stop()
-	}
+	c.stateManager.SetManualOperationActive(true)
+	defer c.stateManager.SetManualOperationActive(false)
 
-	time.Sleep(500 * time.Millisecond)
+	c.musicManager.ExecuteWithDisabledHandlers(func() {
+		if currentState == state.StateDJ {
+			c.musicManager.Stop()
+		} else {
+			c.radioManager.Stop()
+		}
 
-	err = c.voiceManager.JoinUser(i.GuildID, i.Member.User.ID)
+		time.Sleep(500 * time.Millisecond)
+
+		err = c.voiceManager.JoinUser(i.GuildID, i.Member.User.ID)
+		if err != nil {
+			return
+		}
+
+		time.Sleep(500 * time.Millisecond)
+
+		if c.stateManager.IsInIdleChannel() {
+			c.stateManager.SetBotState(state.StateIdle)
+			vc := c.voiceManager.GetVoiceConnection()
+			if vc != nil && !c.radioManager.IsPlaying() {
+				c.radioManager.Start(vc)
+			}
+		} else {
+			if currentState == state.StateDJ && c.musicManager.GetCurrentSong() != nil && !c.musicManager.IsPaused() {
+				c.stateManager.SetBotState(state.StateDJ)
+				vc := c.voiceManager.GetVoiceConnection()
+				if vc != nil {
+					c.musicManager.Start(vc)
+				}
+			} else {
+				c.stateManager.SetBotState(state.StateRadio)
+				vc := c.voiceManager.GetVoiceConnection()
+				if vc != nil && !c.radioManager.IsPlaying() {
+					c.radioManager.Start(vc)
+				}
+			}
+		}
+	})
+
 	if err != nil {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("❌ Failed to join your voice channel."),
@@ -79,33 +112,17 @@ func (c *JoinCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		return err
 	}
 
-	time.Sleep(500 * time.Millisecond)
-
 	if c.stateManager.IsInIdleChannel() {
-		c.stateManager.SetBotState(state.StateIdle)
-		vc := c.voiceManager.GetVoiceConnection()
-		if vc != nil && !c.radioManager.IsPlaying() {
-			c.radioManager.Start(vc)
-		}
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("✅ Joined your voice channel and started radio."),
 		})
 	} else {
-		if currentState == state.StateDJ && c.musicManager.GetCurrentSong() != nil {
-			c.stateManager.SetBotState(state.StateDJ)
-			vc := c.voiceManager.GetVoiceConnection()
-			if vc != nil {
-				c.musicManager.Start(vc)
-			}
+		currentState := c.stateManager.GetBotState()
+		if currentState == state.StateDJ {
 			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 				Content: stringPtr("✅ Joined your voice channel and resumed music."),
 			})
 		} else {
-			c.stateManager.SetBotState(state.StateRadio)
-			vc := c.voiceManager.GetVoiceConnection()
-			if vc != nil && !c.radioManager.IsPlaying() {
-				c.radioManager.Start(vc)
-			}
 			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 				Content: stringPtr("✅ Joined your voice channel and started radio."),
 			})

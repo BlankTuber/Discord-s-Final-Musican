@@ -16,19 +16,20 @@ import (
 )
 
 type Manager struct {
-	player             *Player
-	queue              *Queue
-	stateManager       *state.Manager
-	dbManager          *config.DatabaseManager
-	socketClient       *socket.Client
-	radioManager       *radio.Manager
-	vcGetter           func() *discordgo.VoiceConnection
-	activeDownloads    map[string]bool
-	activePlaylistUrls map[string]bool
-	pendingDownloads   int32
-	clearing           int32
-	mu                 sync.RWMutex
-	downloadMu         sync.RWMutex
+	player              *Player
+	queue               *Queue
+	stateManager        *state.Manager
+	dbManager           *config.DatabaseManager
+	socketClient        *socket.Client
+	radioManager        *radio.Manager
+	vcGetter            func() *discordgo.VoiceConnection
+	activeDownloads     map[string]bool
+	activePlaylistUrls  map[string]bool
+	pendingDownloads    int32
+	clearing            int32
+	disableAutoHandlers int32
+	mu                  sync.RWMutex
+	downloadMu          sync.RWMutex
 }
 
 func NewManager(stateManager *state.Manager, dbManager *config.DatabaseManager, radioManager *radio.Manager, socketClient *socket.Client) *Manager {
@@ -46,6 +47,59 @@ func NewManager(stateManager *state.Manager, dbManager *config.DatabaseManager, 
 	manager.player.SetOnSongEnd(manager.onSongEnd)
 
 	return manager
+}
+
+func (m *Manager) EnableAutoHandlers() {
+	atomic.StoreInt32(&m.disableAutoHandlers, 0)
+	logger.Debug.Println("Auto handlers enabled")
+}
+
+func (m *Manager) DisableAutoHandlers() {
+	atomic.StoreInt32(&m.disableAutoHandlers, 1)
+	logger.Debug.Println("Auto handlers disabled")
+}
+
+func (m *Manager) AreAutoHandlersEnabled() bool {
+	return atomic.LoadInt32(&m.disableAutoHandlers) == 0
+}
+
+func (m *Manager) ExecuteWithDisabledHandlers(fn func()) {
+	m.DisableAutoHandlers()
+	defer m.EnableAutoHandlers()
+	fn()
+}
+
+func (m *Manager) Pause() error {
+	if !m.player.IsPlaying() {
+		return fmt.Errorf("no song is currently playing")
+	}
+
+	if m.player.IsPaused() {
+		return fmt.Errorf("music is already paused")
+	}
+
+	logger.Info.Println("Pausing music...")
+	m.player.Pause()
+
+	return nil
+}
+
+func (m *Manager) Resume() error {
+	if !m.player.IsPaused() {
+		return fmt.Errorf("music is not paused")
+	}
+
+	vc := m.getVoiceConnection()
+	if vc == nil {
+		return fmt.Errorf("no voice connection available")
+	}
+
+	logger.Info.Println("Resuming music...")
+	return m.player.Resume(vc)
+}
+
+func (m *Manager) IsPaused() bool {
+	return m.player.IsPaused()
 }
 
 func (m *Manager) RequestSong(url, requestedBy string) error {
@@ -175,7 +229,7 @@ func (m *Manager) handleQueueAddition() {
 
 	currentState := m.stateManager.GetBotState()
 
-	if currentState == state.StateDJ && !m.player.IsPlaying() {
+	if currentState == state.StateDJ && !m.player.IsPlaying() && !m.player.IsPaused() {
 		m.startNextSong()
 	} else if currentState == state.StateRadio || currentState == state.StateIdle {
 		m.radioManager.Stop()
@@ -211,7 +265,7 @@ func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !m.player.IsPlaying() {
+	if !m.player.IsPlaying() && !m.player.IsPaused() {
 		return
 	}
 
@@ -290,6 +344,16 @@ func (m *Manager) onSongEnd() {
 		return
 	}
 
+	if !m.AreAutoHandlersEnabled() {
+		logger.Debug.Println("Auto handlers disabled, skipping onSongEnd")
+		return
+	}
+
+	if m.stateManager.IsManualOperationActive() {
+		logger.Debug.Println("Manual operation active, skipping onSongEnd")
+		return
+	}
+
 	if m.queue.HasNext() {
 		m.playNext()
 	} else {
@@ -299,6 +363,14 @@ func (m *Manager) onSongEnd() {
 			time.Sleep(1 * time.Second)
 
 			if atomic.LoadInt32(&m.clearing) == 1 {
+				return
+			}
+
+			if !m.AreAutoHandlersEnabled() {
+				return
+			}
+
+			if m.stateManager.IsManualOperationActive() {
 				return
 			}
 

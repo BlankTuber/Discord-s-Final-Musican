@@ -31,6 +31,7 @@ type RadioState struct {
 type MusicState struct {
 	CurrentSong   *Song
 	IsPlaying     bool
+	IsPaused      bool
 	QueuePosition int
 }
 

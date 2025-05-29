@@ -6,15 +6,16 @@ import (
 )
 
 type Manager struct {
-	botState     BotState
-	opState      OperationState
-	voiceState   VoiceState
-	radioState   RadioState
-	musicState   MusicState
-	config       Config
-	lastActivity time.Time
-	shuttingDown bool
-	mu           sync.RWMutex
+	botState       BotState
+	opState        OperationState
+	voiceState     VoiceState
+	radioState     RadioState
+	musicState     MusicState
+	config         Config
+	lastActivity   time.Time
+	shuttingDown   bool
+	manualOpActive bool
+	mu             sync.RWMutex
 }
 
 func NewManager(config Config) *Manager {
@@ -59,6 +60,18 @@ func (m *Manager) SetShuttingDown(shutting bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.shuttingDown = shutting
+}
+
+func (m *Manager) IsManualOperationActive() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.manualOpActive
+}
+
+func (m *Manager) SetManualOperationActive(active bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.manualOpActive = active
 }
 
 func (m *Manager) IsOperationInProgress() bool {
@@ -204,6 +217,23 @@ func (m *Manager) IsMusicPlaying() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.musicState.IsPlaying
+}
+
+func (m *Manager) IsMusicPaused() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.musicState.IsPaused
+}
+
+func (m *Manager) SetMusicPaused(paused bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.shuttingDown {
+		m.musicState.IsPaused = paused
+		if !paused {
+			m.lastActivity = time.Now()
+		}
+	}
 }
 
 func (m *Manager) GetQueuePosition() int {

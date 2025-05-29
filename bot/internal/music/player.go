@@ -25,8 +25,11 @@ const (
 type Player struct {
 	stateManager *state.Manager
 	stopChan     chan bool
+	pauseChan    chan bool
+	resumeChan   chan bool
 	doneChan     chan struct{}
 	isPlaying    bool
+	isPaused     bool
 	currentSong  *state.Song
 	onSongEnd    func()
 	ctx          context.Context
@@ -38,6 +41,8 @@ func NewPlayer(stateManager *state.Manager) *Player {
 	return &Player{
 		stateManager: stateManager,
 		stopChan:     make(chan bool, 1),
+		pauseChan:    make(chan bool, 1),
+		resumeChan:   make(chan bool, 1),
 		doneChan:     make(chan struct{}),
 	}
 }
@@ -66,18 +71,70 @@ func (p *Player) Play(vc *discordgo.VoiceConnection, song *state.Song) error {
 	default:
 	}
 
+	select {
+	case <-p.pauseChan:
+		logger.Debug.Println("Drained leftover pause signal from previous operation")
+	default:
+	}
+
+	select {
+	case <-p.resumeChan:
+		logger.Debug.Println("Drained leftover resume signal from previous operation")
+	default:
+	}
+
 	p.doneChan = make(chan struct{})
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	p.currentSong = song
 	p.stateManager.SetPlaying(true)
+	p.stateManager.SetMusicPaused(false)
 	p.isPlaying = true
+	p.isPaused = false
 
 	logger.Info.Printf("Starting playback: %s by %s", song.Title, song.Artist)
 
 	go p.playLoop(vc, song)
 
 	return nil
+}
+
+func (p *Player) Pause() {
+	p.mu.Lock()
+	if !p.isPlaying || p.isPaused {
+		p.mu.Unlock()
+		return
+	}
+
+	logger.Info.Println("Pausing music player...")
+
+	select {
+	case p.pauseChan <- true:
+	default:
+	}
+
+	p.isPaused = true
+	p.stateManager.SetMusicPaused(true)
+	p.mu.Unlock()
+}
+
+func (p *Player) Resume(vc *discordgo.VoiceConnection) error {
+	p.mu.Lock()
+	if !p.isPaused {
+		p.mu.Unlock()
+		return nil
+	}
+
+	logger.Info.Println("Resuming music player...")
+
+	song := p.currentSong
+	p.mu.Unlock()
+
+	if song == nil {
+		return fmt.Errorf("no song to resume")
+	}
+
+	return p.Play(vc, song)
 }
 
 func (p *Player) Stop() {
@@ -112,8 +169,10 @@ func (p *Player) Stop() {
 
 	p.mu.Lock()
 	p.isPlaying = false
+	p.isPaused = false
 	p.currentSong = nil
 	p.stateManager.SetPlaying(false)
+	p.stateManager.SetMusicPaused(false)
 	p.mu.Unlock()
 }
 
@@ -121,6 +180,12 @@ func (p *Player) IsPlaying() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.isPlaying
+}
+
+func (p *Player) IsPaused() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.isPaused
 }
 
 func (p *Player) GetCurrentSong() *state.Song {
@@ -150,13 +215,14 @@ func (p *Player) playLoop(vc *discordgo.VoiceConnection, song *state.Song) {
 		p.mu.RLock()
 		doneChan := p.doneChan
 		onSongEnd := p.onSongEnd
+		wasPaused := p.isPaused
 		p.mu.RUnlock()
 
 		if doneChan != nil {
 			close(doneChan)
 		}
 
-		if onSongEnd != nil {
+		if onSongEnd != nil && !wasPaused {
 			onSongEnd()
 		}
 
@@ -229,6 +295,13 @@ func (p *Player) playFile(vc *discordgo.VoiceConnection, song *state.Song) error
 		case <-p.ctx.Done():
 			return nil
 		case <-p.stopChan:
+			return nil
+		case <-p.pauseChan:
+			logger.Info.Println("Music paused")
+			p.mu.Lock()
+			p.isPlaying = false
+			p.stateManager.SetPlaying(false)
+			p.mu.Unlock()
 			return nil
 		default:
 		}

@@ -113,3 +113,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 func (m *Manager) Name() string {
 	return "VoiceManager"
 }
+
+func (m *Manager) GetConnection() *Operations {
+	return m.operations
+}
