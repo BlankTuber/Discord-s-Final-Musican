@@ -310,5 +310,6 @@ def handle_ping(params, config):
     print("UDS: Received ping request")
     return {
         "message": "pong",
-        "timestamp": params.get("timestamp", "none")
+        "timestamp": params.get("timestamp", "none"),
+        "server_time": time.time()
     }

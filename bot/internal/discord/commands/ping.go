@@ -4,16 +4,21 @@ import (
 	"fmt"
 	"time"
 
+	"musicbot/internal/socket" // Import your socket package
+
 	"github.com/bwmarrin/discordgo"
 )
 
 type PingCommand struct {
-	session *discordgo.Session
+	session      *discordgo.Session
+	socketClient *socket.Client // Add a field for the socket client
 }
 
-func NewPingCommand(session *discordgo.Session) *PingCommand {
+// NewPingCommand now accepts the socket client
+func NewPingCommand(session *discordgo.Session, socketClient *socket.Client) *PingCommand {
 	return &PingCommand{
-		session: session,
+		session:      session,
+		socketClient: socketClient,
 	}
 }
 
@@ -22,7 +27,7 @@ func (c *PingCommand) Name() string {
 }
 
 func (c *PingCommand) Description() string {
-	return "Check bot latency and response time"
+	return "Check bot latency and response time, and downloader status"
 }
 
 func (c *PingCommand) Options() []*discordgo.ApplicationCommandOption {
@@ -40,18 +45,40 @@ func (c *PingCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	responseTime := time.Since(startTime)
-
 	wsLatency := s.HeartbeatLatency()
+	botStatus := c.getLatencyStatus(wsLatency)
 
-	status := c.getLatencyStatus(wsLatency)
+	// Get downloader status
+	downloaderStatus := c.socketClient.GetDownloaderStatus()
+	downloaderPingLatency := "N/A"
+
+	// Try to send a ping to the downloader and measure latency
+	if c.socketClient.IsConnected() {
+		downloaderPingStartTime := time.Now()
+		_, err := c.socketClient.SendPingWithResponse()
+		if err == nil {
+			downloaderPingLatency = fmt.Sprintf("%dms", time.Since(downloaderPingStartTime).Milliseconds())
+		} else {
+			downloaderPingLatency = fmt.Sprintf("Error: %v", err)
+		}
+	} else {
+		downloaderPingLatency = "Disconnected"
+	}
 
 	content := fmt.Sprintf("🏓 **Pong!**\n\n"+
 		"📡 **WebSocket Latency:** %dms %s\n"+
-		"⚡ **Response Time:** %dms\n"+
-		"🤖 **Bot Status:** Online and Ready",
+		"⚡ **Bot Response Time:** %dms\n"+
+		"🤖 **Bot Status:** Online and Ready %s\n"+
+		"⬇️ **Downloader Status:** %s (Ping: %s)", // Added downloader status
 		wsLatency.Milliseconds(),
-		status,
-		responseTime.Milliseconds())
+		botStatus,
+		responseTime.Milliseconds(),
+		// You might want to remove this if `botStatus` already includes "Online and Ready"
+		// or adjust `botStatus` to be just the latency indicator.
+		"", // Placeholder for botStatus if it's already in the string.
+		downloaderStatus,
+		downloaderPingLatency,
+	)
 
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content: &content,

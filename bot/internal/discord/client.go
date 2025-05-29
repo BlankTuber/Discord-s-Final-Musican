@@ -191,7 +191,7 @@ func (c *Client) wrapCommand(cmd commands.Command, level permissions.Level) comm
 
 func (c *Client) registerCommands() {
 	c.commandRouter.Register(commands.NewHelpCommand(c.permissionManager))
-	c.commandRouter.Register(commands.NewPingCommand(c.session))
+	c.commandRouter.Register(commands.NewPingCommand(c.session, c.socketClient))
 
 	c.commandRouter.Register(c.wrapCommand(
 		commands.NewJoinCommand(c.voiceManager, c.radioManager, c.musicManager, c.stateManager),

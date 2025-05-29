@@ -39,6 +39,7 @@ type Client struct {
 	resetPendingHandler  func()
 	mu                   sync.RWMutex
 	pendingRequests      map[string]chan interface{}
+	lastDownloaderPing   time.Time
 }
 
 func NewClient(socketPath string) *Client {
@@ -82,15 +83,56 @@ func (c *Client) Connect() error {
 
 	c.conn = conn
 	c.connected = true
+	c.lastDownloaderPing = time.Now() // Initialize on connection
 
 	if c.resetPendingHandler != nil {
 		c.resetPendingHandler()
 	}
 
 	go c.listenForResponses()
+	go c.startDownloaderPingRoutine() // Start the periodic ping routine
 
 	logger.Info.Println("Successfully connected to socket")
 	return nil
+}
+
+func (c *Client) startDownloaderPingRoutine() {
+	ticker := time.NewTicker(2 * time.Minute) // Ping every 2 minutes
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if !c.IsConnected() {
+			logger.Info.Println("Downloader ping routine: Not connected to downloader, skipping ping.")
+			continue
+		}
+
+		// Send a ping request
+		requestID := c.generateRequestID()
+		request := map[string]interface{}{
+			"command": "ping",
+			"id":      requestID,
+			"params": map[string]interface{}{
+				"timestamp": time.Now().Format(time.RFC3339), // Send current timestamp
+			},
+		}
+
+		data, err := json.Marshal(request)
+		if err != nil {
+			logger.Error.Printf("Downloader ping routine: Failed to marshal ping request: %v", err)
+			continue
+		}
+
+		// We don't need to wait for a response for this periodic ping,
+		// but we should handle potential send errors.
+		err = c.sendMessage(data)
+		if err != nil {
+			logger.Error.Printf("Downloader ping routine: Failed to send ping request: %v", err)
+			// If sending fails, it might mean the connection is dead.
+			// The listenForResponses goroutine will eventually detect this.
+			continue
+		}
+		logger.Debug.Println("Downloader ping routine: Sent periodic ping.")
+	}
 }
 
 func (c *Client) Disconnect() error {
@@ -358,6 +400,27 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 		return
 	}
 
+	// Check if this is a response to a 'ping' command
+	if response.ID != "" { // Assuming 'ID' is used for command responses
+		c.mu.Lock()
+		if ch, ok := c.pendingRequests[response.ID]; ok {
+			ch <- response.Data // Send the data back to the waiting channel
+			delete(c.pendingRequests, response.ID)
+			c.mu.Unlock()
+			return // Handled as a pending request, no further processing needed here
+		}
+		c.mu.Unlock()
+	}
+
+	if response.Status == "success" && response.ID != "" && response.Data != nil {
+		if msg, ok := response.Data["message"].(string); ok && msg == "pong" {
+			c.mu.Lock()
+			c.lastDownloaderPing = time.Now()
+			c.mu.Unlock()
+			logger.Debug.Println("Received pong from downloader, updated lastDownloaderPing.")
+		}
+	}
+
 	if title, hasTitle := data["title"].(string); hasTitle {
 		song := &state.Song{
 			ID:           int64(getInt(data, "id")),
@@ -520,4 +583,66 @@ func (c *Client) Shutdown(ctx context.Context) error {
 
 func (c *Client) Name() string {
 	return "SocketClient"
+}
+
+func (c *Client) SendPingWithResponse() (map[string]interface{}, error) {
+	if !c.IsConnected() {
+		return nil, fmt.Errorf("not connected to downloader")
+	}
+
+	requestID := c.generateRequestID()
+	request := map[string]interface{}{
+		"command": "ping",
+		"id":      requestID,
+		"params": map[string]interface{}{
+			"timestamp": time.Now().Format(time.RFC3339),
+		},
+	}
+
+	data, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal ping request: %w", err)
+	}
+
+	responseChan := make(chan interface{})
+	c.mu.Lock()
+	c.pendingRequests[requestID] = responseChan
+	c.mu.Unlock()
+
+	err = c.sendMessage(data)
+	if err != nil {
+		c.mu.Lock()
+		delete(c.pendingRequests, requestID)
+		c.mu.Unlock()
+		c.connected = false
+		return nil, fmt.Errorf("failed to send ping request: %w", err)
+	}
+
+	select {
+	case responseData := <-responseChan:
+		if result, ok := responseData.(map[string]interface{}); ok {
+			return result, nil
+		}
+		return nil, fmt.Errorf("unexpected response format for ping")
+	case <-time.After(5 * time.Second): // Timeout for response
+		c.mu.Lock()
+		delete(c.pendingRequests, requestID)
+		c.mu.Unlock()
+		return nil, fmt.Errorf("ping response timed out")
+	}
+}
+
+func (c *Client) GetDownloaderStatus() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if !c.connected {
+		return "🔴 Disconnected"
+	}
+
+	if time.Since(c.lastDownloaderPing) > 3*time.Minute { // If no pong in 3 minutes
+		return "🟠 Unresponsive (No pong in 3 minutes)"
+	}
+
+	return "🟢 Connected and Responsive"
 }
