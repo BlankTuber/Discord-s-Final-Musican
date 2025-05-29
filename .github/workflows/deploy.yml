@@ -1,8 +1,9 @@
-# .github/workflows/deploy.yml
-name: Deploy Music Bot
+name: Deploy Discord Music Bot
 
 on:
   push:
+    branches: [ main, master ]
+  pull_request:
     branches: [ main, master ]
   workflow_dispatch:
 
@@ -14,171 +15,155 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 2
-    
-    - name: Detect component changes
-      id: changes
-      run: |
-        echo "Detecting changes..."
-        
-        # Initialize all as false
-        echo "janitor_changed=false" >> $GITHUB_OUTPUT
-        echo "downloader_changed=false" >> $GITHUB_OUTPUT
-        echo "bot_changed=false" >> $GITHUB_OUTPUT
-        echo "db_changed=false" >> $GITHUB_OUTPUT
-        echo "first_run=false" >> $GITHUB_OUTPUT
-        
-        # Check if this is the first run (no previous commit)
-        if ! git rev-parse HEAD~1 >/dev/null 2>&1; then
-          echo "first_run=true" >> $GITHUB_OUTPUT
-          echo "janitor_changed=true" >> $GITHUB_OUTPUT
-          echo "downloader_changed=true" >> $GITHUB_OUTPUT
-          echo "bot_changed=true" >> $GITHUB_OUTPUT
-          echo "db_changed=true" >> $GITHUB_OUTPUT
-          echo "First deployment detected - building all components"
-        else
-          # Check what changed since last commit
-          if git diff --name-only HEAD~1 HEAD | grep -E "^janitor/|^shared/" | head -1; then
-            echo "janitor_changed=true" >> $GITHUB_OUTPUT
-            echo "Janitor changes detected"
-          fi
-          
-          if git diff --name-only HEAD~1 HEAD | grep -E "^downloader/|^shared/" | head -1; then
-            echo "downloader_changed=true" >> $GITHUB_OUTPUT
-            echo "Downloader changes detected"
-          fi
-          
-          if git diff --name-only HEAD~1 HEAD | grep -E "^bot/|^shared/" | head -1; then
-            echo "bot_changed=true" >> $GITHUB_OUTPUT
-            echo "Bot changes detected"
-          fi
-          
-          if git diff --name-only HEAD~1 HEAD | grep -E "^db/|^shared/" | head -1; then
-            echo "db_changed=true" >> $GITHUB_OUTPUT
-            echo "Database changes detected"
-          fi
-        fi
-    
-    - name: Setup Go
-      if: steps.changes.outputs.bot_changed == 'true' || steps.changes.outputs.db_changed == 'true'
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.24'
-    
-    - name: Setup Python
-      if: steps.changes.outputs.downloader_changed == 'true'
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Install system dependencies
-      if: steps.changes.outputs.janitor_changed == 'true'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential libsqlite3-dev ffmpeg
+        fetch-depth: 2  # Need at least 2 commits to detect changes
     
     - name: Create shared directory
       run: |
         mkdir -p shared
         echo "Shared directory ready"
     
+    - name: Check for janitor changes
+      id: janitor-changes
+      run: |
+        if git diff --name-only HEAD~1 HEAD | grep -q "^janitor/"; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "Janitor code has changed"
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "No janitor changes detected"
+        fi
+    
     - name: Build janitor
-      if: steps.changes.outputs.janitor_changed == 'true'
+      if: steps.janitor-changes.outputs.changed == 'true' || !hashFiles('janitor/janitor')
       run: |
         echo "Building janitor..."
         cd janitor
-        gcc -o janitor janitor.c -lsqlite3 -Wall -O2
+        gcc -o janitor janitor.c -lsqlite3
         chmod +x janitor
         echo "Janitor built successfully"
     
+    - name: Check for database initializer changes
+      id: db-changes
+      run: |
+        if git diff --name-only HEAD~1 HEAD | grep -q "^db/"; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "Database initializer code has changed"
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "No database initializer changes detected"
+        fi
+    
     - name: Build database initializer
-      if: steps.changes.outputs.db_changed == 'true' || steps.changes.outputs.first_run == 'true'
+      if: steps.db-changes.outputs.changed == 'true' || !hashFiles('db/db_init')
       run: |
         echo "Building database initializer..."
         cd db
-        go mod tidy
         go build -o db_init db_initializer.go
         chmod +x db_init
         echo "Database initializer built successfully"
     
-    - name: Initialize database if needed
+    - name: Check if database exists
+      id: db-exists
       run: |
-        cd db
-        if [ ! -f "../shared/musicbot.db" ]; then
-          echo "Database not found, initializing..."
-          ./db_init -path ../shared
-          echo "Database initialized successfully"
-        else
+        if [ -f "shared/musicbot.db" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
           echo "Database already exists"
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "Database does not exist"
         fi
     
-    - name: Setup downloader dependencies
-      if: steps.changes.outputs.downloader_changed == 'true'
+    - name: Initialize database
+      if: steps.db-exists.outputs.exists == 'false'
       run: |
-        echo "Setting up downloader dependencies..."
-        cd downloader
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        echo "Downloader dependencies updated"
+        echo "Initializing database..."
+        cd db
+        ./db_init -path ../shared
+        echo "Database initialized successfully"
     
-    - name: Build bot
-      if: steps.changes.outputs.bot_changed == 'true'
+    - name: Check for Python requirements changes
+      id: py-requirements-changes
       run: |
-        echo "Building bot..."
+        if git diff --name-only HEAD~1 HEAD | grep -q "^downloader/requirements.txt"; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "Python requirements have changed"
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "No Python requirements changes detected"
+        fi
+    
+    - name: Update Python dependencies
+      if: steps.py-requirements-changes.outputs.changed == 'true'
+      run: |
+        echo "Updating Python dependencies..."
+        cd downloader
+        pip3 install -r requirements.txt --user
+        echo "Python dependencies updated"
+    
+    - name: Check for Go mod changes (bot)
+      id: bot-mod-changes
+      run: |
+        if git diff --name-only HEAD~1 HEAD | grep -q "^bot/go.mod\|^bot/go.sum"; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "Bot Go modules have changed"
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "No bot Go module changes detected"
+        fi
+    
+    - name: Update Go dependencies (bot)
+      if: steps.bot-mod-changes.outputs.changed == 'true'
+      run: |
+        echo "Updating bot Go dependencies..."
         cd bot
-        go mod tidy
         go mod download
-        go build -o musicbot cmd/bot/main.go
-        chmod +x musicbot
-        echo "Bot built successfully"
+        go mod tidy
+        echo "Bot Go dependencies updated"
+    
+    - name: Check for Go mod changes (db)
+      id: db-mod-changes
+      run: |
+        if git diff --name-only HEAD~1 HEAD | grep -q "^db/go.mod\|^db/go.sum"; then
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "DB Go modules have changed"
+        else
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "No DB Go module changes detected"
+        fi
+    
+    - name: Update Go dependencies (db)
+      if: steps.db-mod-changes.outputs.changed == 'true'
+      run: |
+        echo "Updating database Go dependencies..."
+        cd db
+        go mod download
+        go mod tidy
+        echo "Database Go dependencies updated"
     
     - name: Run janitor cleanup
-      if: steps.changes.outputs.janitor_changed == 'true' || steps.changes.outputs.first_run == 'true'
       run: |
         echo "Running janitor cleanup..."
         cd janitor
-        ./janitor ../shared/musicbot.db ../shared || echo "Janitor completed with warnings"
+        ./janitor ../shared/musicbot.db ../shared
+        echo "Janitor cleanup completed"
     
-    - name: Stop services before restart
+    - name: Set permissions
       run: |
-        echo "Stopping services..."
-        sudo systemctl stop musicbot-downloader || echo "Downloader service not running"
-        sudo systemctl stop musicbot-bot || echo "Bot service not running"
-        sleep 2
+        echo "Setting proper permissions..."
+        chmod -R 755 .
+        chmod 666 shared/musicbot.db 2>/dev/null || true
+        echo "Permissions set"
     
-    - name: Start/restart downloader service
-      if: steps.changes.outputs.downloader_changed == 'true' || steps.changes.outputs.first_run == 'true'
+    - name: Deployment summary
       run: |
-        echo "Starting downloader service..."
-        sudo systemctl start musicbot-downloader
-        sudo systemctl enable musicbot-downloader
-        sleep 3
-        sudo systemctl status musicbot-downloader --no-pager
-    
-    - name: Start/restart bot service
-      if: steps.changes.outputs.bot_changed == 'true' || steps.changes.outputs.first_run == 'true'
-      run: |
-        echo "Starting bot service..."
-        sudo systemctl start musicbot-bot
-        sudo systemctl enable musicbot-bot
-        sleep 3
-        sudo systemctl status musicbot-bot --no-pager
-    
-    - name: Verify deployment
-      run: |
-        echo "=== Final Service Status ==="
-        echo "Downloader Service:"
-        sudo systemctl is-active musicbot-downloader || echo "Not active"
-        echo "Bot Service:"
-        sudo systemctl is-active musicbot-bot || echo "Not active"
-        
-        echo "=== Log Check ==="
-        echo "Recent downloader logs:"
-        sudo journalctl -u musicbot-downloader --no-pager -n 5 || echo "No logs"
-        echo "Recent bot logs:"
-        sudo journalctl -u musicbot-bot --no-pager -n 5 || echo "No logs"
-        
-        echo "=== Disk Usage ==="
-        du -sh shared/ || echo "Shared directory not found"
-        
-        echo "Deployment completed!"
+        echo "=== Deployment Summary ==="
+        echo "Janitor rebuilt: ${{ steps.janitor-changes.outputs.changed }}"
+        echo "Database initializer rebuilt: ${{ steps.db-changes.outputs.changed }}"
+        echo "Database initialized: ${{ steps.db-exists.outputs.exists == 'false' }}"
+        echo "Python deps updated: ${{ steps.py-requirements-changes.outputs.changed }}"
+        echo "Bot Go deps updated: ${{ steps.bot-mod-changes.outputs.changed }}"
+        echo "DB Go deps updated: ${{ steps.db-mod-changes.outputs.changed }}"
+        echo ""
+        echo "Services will restart automatically at 2:30 AM daily"
+        echo "No manual restart required"
+        echo "==========================="
