@@ -36,11 +36,11 @@ jobs:
     - name: Build janitor
       if: steps.janitor-changes.outputs.changed == 'true' || !hashFiles('janitor/janitor')
       run: |
-        echo "Building janitor..."
+        echo "Building janitor with SQLite3 support..."
         cd janitor
-        gcc -o janitor janitor.c -lsqlite3
+        gcc -Wall -o janitor janitor.c -lsqlite3
         chmod +x janitor
-        echo "Janitor built successfully"
+        echo "Janitor built successfully with SQLite3 linking"
     
     - name: Check for database initializer changes
       id: db-changes
