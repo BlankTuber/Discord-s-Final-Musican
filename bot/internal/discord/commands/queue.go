@@ -44,9 +44,12 @@ func (c *QueueCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 
 func (c *QueueCommand) generateQueueMessage() string {
 	currentSong := c.musicManager.GetCurrentSong()
-	upcoming := c.musicManager.GetUpcoming(10)
+	upcoming := c.musicManager.GetUpcoming(10)   // Show 10 upcoming songs
+	totalQueueItems := c.musicManager.GetQueue() // Get all queue items to count total
 
-	if currentSong == nil && len(upcoming) == 0 {
+	totalSongs := len(totalQueueItems)
+
+	if currentSong == nil && totalSongs == 0 {
 		return "📭 Queue is empty. Use `/play` to add songs!"
 	}
 
@@ -65,14 +68,20 @@ func (c *QueueCommand) generateQueueMessage() string {
 			message += fmt.Sprintf("**%d.** %s - %s (%s)\n",
 				i+1, song.Title, song.Artist, duration)
 		}
+
+		// Show if there are more songs beyond the displayed ones
+		if totalSongs > len(upcoming) {
+			remainingSongs := totalSongs - len(upcoming)
+			if currentSong != nil {
+				remainingSongs-- // Account for the currently playing song
+			}
+			if remainingSongs > 0 {
+				message += fmt.Sprintf("\n*... and %d more songs*\n", remainingSongs)
+			}
+		}
 	}
 
-	totalSongs := len(upcoming)
-	if currentSong != nil {
-		totalSongs++
-	}
-
-	message += fmt.Sprintf("\n📊 **Total songs:** %d", totalSongs)
+	message += fmt.Sprintf("\n📊 **Total songs in queue:** %d", totalSongs)
 
 	return message
 }

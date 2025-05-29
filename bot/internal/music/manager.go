@@ -9,6 +9,7 @@ import (
 	"musicbot/internal/socket"
 	"musicbot/internal/state"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -24,6 +25,8 @@ type Manager struct {
 	vcGetter           func() *discordgo.VoiceConnection
 	activeDownloads    map[string]bool
 	activePlaylistUrls map[string]bool
+	pendingDownloads   int32
+	clearing           int32
 	mu                 sync.RWMutex
 	downloadMu         sync.RWMutex
 }
@@ -46,6 +49,11 @@ func NewManager(stateManager *state.Manager, dbManager *config.DatabaseManager, 
 }
 
 func (m *Manager) RequestSong(url, requestedBy string) error {
+	if atomic.LoadInt32(&m.clearing) == 1 {
+		logger.Info.Printf("Ignoring song request while clearing queue: %s", url)
+		return nil
+	}
+
 	if m.socketClient == nil || !m.socketClient.IsConnected() {
 		return fmt.Errorf("downloader not available")
 	}
@@ -59,7 +67,8 @@ func (m *Manager) RequestSong(url, requestedBy string) error {
 	m.activeDownloads[url] = true
 	m.downloadMu.Unlock()
 
-	logger.Info.Printf("Requesting download for: %s", url)
+	atomic.AddInt32(&m.pendingDownloads, 1)
+	logger.Info.Printf("Requesting download for: %s (pending: %d)", url, atomic.LoadInt32(&m.pendingDownloads))
 
 	go func() {
 		defer func() {
@@ -70,6 +79,7 @@ func (m *Manager) RequestSong(url, requestedBy string) error {
 
 		err := m.socketClient.SendDownloadRequest(url, requestedBy)
 		if err != nil {
+			atomic.AddInt32(&m.pendingDownloads, -1)
 			logger.Error.Printf("Failed to send download request: %v", err)
 		}
 	}()
@@ -78,6 +88,11 @@ func (m *Manager) RequestSong(url, requestedBy string) error {
 }
 
 func (m *Manager) RequestPlaylist(url, requestedBy string, limit int) error {
+	if atomic.LoadInt32(&m.clearing) == 1 {
+		logger.Info.Printf("Ignoring playlist request while clearing queue: %s", url)
+		return nil
+	}
+
 	if m.socketClient == nil || !m.socketClient.IsConnected() {
 		return fmt.Errorf("downloader not available")
 	}
@@ -109,7 +124,29 @@ func (m *Manager) RequestPlaylist(url, requestedBy string, limit int) error {
 	return nil
 }
 
+func (m *Manager) OnPlaylistStart(totalTracks int) {
+	if atomic.LoadInt32(&m.clearing) == 1 {
+		logger.Info.Printf("Ignoring playlist start while clearing queue, tracks: %d", totalTracks)
+		return
+	}
+
+	atomic.AddInt32(&m.pendingDownloads, int32(totalTracks))
+	logger.Info.Printf("Playlist started with %d tracks (total pending: %d)", totalTracks, atomic.LoadInt32(&m.pendingDownloads))
+}
+
 func (m *Manager) OnDownloadComplete(song *state.Song) error {
+	atomic.AddInt32(&m.pendingDownloads, -1)
+
+	if song == nil {
+		logger.Info.Printf("Download failed, decremented pending counter (pending: %d)", atomic.LoadInt32(&m.pendingDownloads))
+		return nil
+	}
+
+	if atomic.LoadInt32(&m.clearing) == 1 {
+		logger.Info.Printf("Ignoring download completion while clearing queue: %s (pending: %d)", song.Title, atomic.LoadInt32(&m.pendingDownloads))
+		return nil
+	}
+
 	go func() {
 		err := m.queue.Add(song)
 		if err != nil {
@@ -117,9 +154,11 @@ func (m *Manager) OnDownloadComplete(song *state.Song) error {
 			return
 		}
 
-		logger.Info.Printf("Song added to queue: %s by %s", song.Title, song.Artist)
+		logger.Info.Printf("Song added to queue: %s by %s (pending: %d)", song.Title, song.Artist, atomic.LoadInt32(&m.pendingDownloads))
 
-		m.handleQueueAddition()
+		if atomic.LoadInt32(&m.clearing) == 0 {
+			m.handleQueueAddition()
+		}
 	}()
 
 	return nil
@@ -130,12 +169,17 @@ func (m *Manager) OnPlaylistItemComplete(playlistUrl string, song *state.Song) e
 }
 
 func (m *Manager) handleQueueAddition() {
+	if atomic.LoadInt32(&m.clearing) == 1 {
+		return
+	}
+
 	currentState := m.stateManager.GetBotState()
 
 	if currentState == state.StateDJ && !m.player.IsPlaying() {
 		m.startNextSong()
 	} else if currentState == state.StateRadio || currentState == state.StateIdle {
 		m.radioManager.Stop()
+		time.Sleep(200 * time.Millisecond)
 		m.stateManager.SetBotState(state.StateDJ)
 		m.startNextSong()
 	}
@@ -144,6 +188,10 @@ func (m *Manager) handleQueueAddition() {
 func (m *Manager) Start(vc *discordgo.VoiceConnection) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if atomic.LoadInt32(&m.clearing) == 1 {
+		return fmt.Errorf("cannot start music while clearing queue")
+	}
 
 	if m.player.IsPlaying() {
 		return nil
@@ -172,11 +220,15 @@ func (m *Manager) Stop() {
 }
 
 func (m *Manager) startNextSong() {
+	if atomic.LoadInt32(&m.clearing) == 1 {
+		return
+	}
+
 	go func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
-		if m.stateManager.IsShuttingDown() {
+		if m.stateManager.IsShuttingDown() || atomic.LoadInt32(&m.clearing) == 1 {
 			return
 		}
 
@@ -200,11 +252,15 @@ func (m *Manager) startNextSong() {
 }
 
 func (m *Manager) playNext() {
+	if atomic.LoadInt32(&m.clearing) == 1 {
+		return
+	}
+
 	go func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
-		if m.stateManager.IsShuttingDown() {
+		if m.stateManager.IsShuttingDown() || atomic.LoadInt32(&m.clearing) == 1 {
 			return
 		}
 
@@ -230,7 +286,7 @@ func (m *Manager) playNext() {
 }
 
 func (m *Manager) onSongEnd() {
-	if m.stateManager.IsShuttingDown() {
+	if m.stateManager.IsShuttingDown() || atomic.LoadInt32(&m.clearing) == 1 {
 		return
 	}
 
@@ -242,14 +298,20 @@ func (m *Manager) onSongEnd() {
 		go func() {
 			time.Sleep(1 * time.Second)
 
+			if atomic.LoadInt32(&m.clearing) == 1 {
+				return
+			}
+
 			if m.stateManager.IsInIdleChannel() {
 				m.stateManager.SetBotState(state.StateIdle)
 			} else {
 				m.stateManager.SetBotState(state.StateRadio)
 			}
 
+			time.Sleep(500 * time.Millisecond)
+
 			vc := m.getVoiceConnection()
-			if vc != nil {
+			if vc != nil && !m.radioManager.IsPlaying() {
 				m.radioManager.Start(vc)
 			}
 		}()
@@ -272,9 +334,54 @@ func (m *Manager) IsPlaying() bool {
 	return m.player.IsPlaying()
 }
 
+func (m *Manager) HasActiveDownloads() bool {
+	m.downloadMu.RLock()
+	activeRequests := len(m.activeDownloads) > 0 || len(m.activePlaylistUrls) > 0
+	m.downloadMu.RUnlock()
+
+	pendingCount := atomic.LoadInt32(&m.pendingDownloads)
+
+	if activeRequests || pendingCount > 0 {
+		logger.Info.Printf("Active downloads check: requests=%v, pending=%d", activeRequests, pendingCount)
+	}
+
+	return activeRequests || pendingCount > 0
+}
+
+func (m *Manager) ResetPendingDownloads() {
+	old := atomic.SwapInt32(&m.pendingDownloads, 0)
+	if old > 0 {
+		logger.Info.Printf("Reset pending downloads counter from %d to 0", old)
+	}
+}
+
+func (m *Manager) GetPendingDownloads() int {
+	return int(atomic.LoadInt32(&m.pendingDownloads))
+}
+
 func (m *Manager) ClearQueue() error {
+	if m.HasActiveDownloads() {
+		return fmt.Errorf("cannot clear queue while downloads are in progress")
+	}
+
+	atomic.StoreInt32(&m.clearing, 1)
+	defer atomic.StoreInt32(&m.clearing, 0)
+
 	m.Stop()
-	return m.queue.Clear()
+
+	time.Sleep(1 * time.Second)
+
+	err := m.queue.Clear()
+	if err != nil {
+		return err
+	}
+
+	atomic.StoreInt32(&m.pendingDownloads, 0)
+	logger.Info.Println("Cleared pending downloads counter")
+
+	time.Sleep(500 * time.Millisecond)
+
+	return nil
 }
 
 func (m *Manager) RemoveFromQueue(queueID int64) error {

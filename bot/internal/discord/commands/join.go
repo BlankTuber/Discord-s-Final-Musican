@@ -5,6 +5,7 @@ import (
 	"musicbot/internal/radio"
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -68,6 +69,8 @@ func (c *JoinCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		c.radioManager.Stop()
 	}
 
+	time.Sleep(500 * time.Millisecond)
+
 	err = c.voiceManager.JoinUser(i.GuildID, i.Member.User.ID)
 	if err != nil {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -76,10 +79,12 @@ func (c *JoinCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		return err
 	}
 
+	time.Sleep(500 * time.Millisecond)
+
 	if c.stateManager.IsInIdleChannel() {
 		c.stateManager.SetBotState(state.StateIdle)
 		vc := c.voiceManager.GetVoiceConnection()
-		if vc != nil {
+		if vc != nil && !c.radioManager.IsPlaying() {
 			c.radioManager.Start(vc)
 		}
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -98,7 +103,7 @@ func (c *JoinCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		} else {
 			c.stateManager.SetBotState(state.StateRadio)
 			vc := c.voiceManager.GetVoiceConnection()
-			if vc != nil {
+			if vc != nil && !c.radioManager.IsPlaying() {
 				c.radioManager.Start(vc)
 			}
 			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{

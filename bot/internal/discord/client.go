@@ -67,7 +67,9 @@ func (c *Client) setupMusicManager() {
 	c.musicManager.SetVoiceConnectionGetter(c.voiceManager.GetVoiceConnection)
 
 	if c.socketClient != nil {
-		// Handle individual song downloads
+		c.socketClient.SetResetPendingHandler(c.musicManager.ResetPendingDownloads)
+		c.socketClient.SetPlaylistStartHandler(c.musicManager.OnPlaylistStart)
+
 		c.socketClient.SetDownloadHandler(func(song *state.Song) {
 			err := c.musicManager.OnDownloadComplete(song)
 			if err != nil {
@@ -75,7 +77,6 @@ func (c *Client) setupMusicManager() {
 			}
 		})
 
-		// Handle playlist streaming events (individual songs as they download)
 		c.socketClient.SetPlaylistEventHandler(func(playlistUrl string, song *state.Song) {
 			err := c.musicManager.OnPlaylistItemComplete(playlistUrl, song)
 			if err != nil {
@@ -83,7 +84,6 @@ func (c *Client) setupMusicManager() {
 			}
 		})
 
-		// Handle legacy batch playlist downloads (fallback)
 		c.socketClient.SetPlaylistHandler(func(songs []state.Song) {
 			for _, song := range songs {
 				err := c.musicManager.OnDownloadComplete(&song)

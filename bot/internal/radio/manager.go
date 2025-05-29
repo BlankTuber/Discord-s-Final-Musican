@@ -4,6 +4,7 @@ import (
 	"context"
 	"musicbot/internal/logger"
 	"musicbot/internal/state"
+	"sync"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -12,6 +13,8 @@ type Manager struct {
 	player        *Player
 	streamManager *StreamManager
 	stateManager  *state.Manager
+	starting      bool
+	mu            sync.RWMutex
 }
 
 func NewManager(stateManager *state.Manager, streams []state.StreamOption) *Manager {
@@ -23,9 +26,23 @@ func NewManager(stateManager *state.Manager, streams []state.StreamOption) *Mana
 }
 
 func (m *Manager) Start(vc *discordgo.VoiceConnection) error {
-	if m.player.IsPlaying() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.starting {
+		logger.Info.Println("Radio is already starting, ignoring duplicate start request")
 		return nil
 	}
+
+	if m.player.IsPlaying() {
+		logger.Info.Println("Radio is already playing, ignoring start request")
+		return nil
+	}
+
+	m.starting = true
+	defer func() {
+		m.starting = false
+	}()
 
 	logger.Info.Println("Starting radio stream...")
 	m.stateManager.SetRadioPlaying(true)
@@ -34,6 +51,9 @@ func (m *Manager) Start(vc *discordgo.VoiceConnection) error {
 }
 
 func (m *Manager) Stop() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if !m.player.IsPlaying() {
 		return
 	}
@@ -70,7 +90,9 @@ func (m *Manager) IsValidStream(name string) bool {
 }
 
 func (m *Manager) IsPlaying() bool {
-	return m.player.IsPlaying()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.player.IsPlaying() || m.starting
 }
 
 func (m *Manager) Shutdown(ctx context.Context) error {

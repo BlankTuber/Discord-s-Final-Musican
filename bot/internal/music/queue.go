@@ -191,15 +191,16 @@ func (q *Queue) GetUpcoming(limit int) []state.Song {
 }
 
 func (q *Queue) Clear() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
 	err := q.dbManager.ClearQueue()
 	if err != nil {
 		return fmt.Errorf("failed to clear queue in database: %w", err)
 	}
 
-	q.mu.Lock()
 	q.items = make([]state.QueueItem, 0)
 	q.position = 0
-	q.mu.Unlock()
 
 	logger.Info.Println("Queue cleared")
 	return nil

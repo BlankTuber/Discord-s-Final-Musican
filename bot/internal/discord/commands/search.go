@@ -84,7 +84,6 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 	query := options[0].StringValue()
 	userID := i.Member.User.ID
 
-	// Default to SoundCloud, but allow user to choose
 	platform := "soundcloud"
 	if len(options) > 1 && options[1].StringValue() != "" {
 		platform = options[1].StringValue()
@@ -120,10 +119,8 @@ func (c *SearchCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCr
 		return err
 	}
 
-	// Create a unique search key that doesn't use underscores to avoid parsing issues
 	searchKey := fmt.Sprintf("%s-%s", userID, i.Interaction.ID)
 
-	// Send search request asynchronously
 	go func() {
 		err := c.socketClient.SendSearchRequest(query, platform, 5)
 		if err != nil {
@@ -238,8 +235,6 @@ func (c *SearchCommand) HandleSearchSelection(s *discordgo.Session, i *discordgo
 		return err
 	}
 
-	// Parse the custom ID - format: "search_select_USERID-INTERACTIONID_INDEX"
-	// Split by underscores, but be careful because the format is "search_select_SEARCHKEY_INDEX"
 	parts := strings.Split(customID, "_")
 	if len(parts) < 4 || parts[0] != "search" || parts[1] != "select" {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -248,8 +243,6 @@ func (c *SearchCommand) HandleSearchSelection(s *discordgo.Session, i *discordgo
 		return err
 	}
 
-	// The search key is everything between "search_select_" and the last "_INDEX"
-	// So we join parts[2:len(parts)-1] and the last part is the index
 	searchKey := strings.Join(parts[2:len(parts)-1], "_")
 	selectedIndexStr := parts[len(parts)-1]
 
@@ -298,6 +291,8 @@ func (c *SearchCommand) HandleSearchSelection(s *discordgo.Session, i *discordgo
 		c.radioManager.Stop()
 		c.musicManager.Stop()
 
+		time.Sleep(500 * time.Millisecond)
+
 		err = c.voiceManager.JoinUser(i.GuildID, userID)
 		if err != nil {
 			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -315,6 +310,7 @@ func (c *SearchCommand) HandleSearchSelection(s *discordgo.Session, i *discordgo
 			})
 			return err
 		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -324,7 +320,6 @@ func (c *SearchCommand) HandleSearchSelection(s *discordgo.Session, i *discordgo
 		return err
 	}
 
-	// Request song download asynchronously
 	go func() {
 		err := c.musicManager.RequestSong(selectedResult.URL, userID)
 		if err != nil {

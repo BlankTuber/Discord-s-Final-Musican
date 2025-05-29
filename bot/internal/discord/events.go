@@ -6,6 +6,7 @@ import (
 	"musicbot/internal/radio"
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -63,15 +64,20 @@ func (e *EventHandler) handleBotVoiceUpdate(v *discordgo.VoiceStateUpdate) {
 		e.radioManager.Stop()
 
 		go func() {
+			time.Sleep(500 * time.Millisecond)
+
 			if err := e.voiceManager.HandleDisconnect(v.GuildID); err != nil {
 				logger.Error.Printf("Failed to handle disconnect: %v", err)
 				return
 			}
 
 			if !e.stateManager.IsShuttingDown() {
+				time.Sleep(500 * time.Millisecond)
 				e.stateManager.SetBotState(state.StateIdle)
+
+				time.Sleep(500 * time.Millisecond)
 				vc := e.voiceManager.GetVoiceConnection()
-				if vc != nil {
+				if vc != nil && !e.radioManager.IsPlaying() {
 					e.radioManager.Start(vc)
 				}
 			}
@@ -128,10 +134,12 @@ func (e *EventHandler) handleUserLeft(guildID, channelID string) error {
 		currentState := e.stateManager.GetBotState()
 		if currentState == state.StateDJ {
 			e.musicManager.Stop()
+			time.Sleep(500 * time.Millisecond)
 			e.stateManager.SetBotState(state.StateIdle)
 
+			time.Sleep(500 * time.Millisecond)
 			vc := e.voiceManager.GetVoiceConnection()
-			if vc != nil {
+			if vc != nil && !e.radioManager.IsPlaying() {
 				e.radioManager.Start(vc)
 			}
 		}
@@ -143,6 +151,8 @@ func (e *EventHandler) handleUserLeft(guildID, channelID string) error {
 
 		e.radioManager.Stop()
 
+		time.Sleep(500 * time.Millisecond)
+
 		err = e.voiceManager.ReturnToIdle(guildID)
 		if err != nil {
 			return err
@@ -150,8 +160,9 @@ func (e *EventHandler) handleUserLeft(guildID, channelID string) error {
 
 		e.stateManager.SetBotState(state.StateIdle)
 
+		time.Sleep(500 * time.Millisecond)
 		vc := e.voiceManager.GetVoiceConnection()
-		if vc != nil {
+		if vc != nil && !e.radioManager.IsPlaying() {
 			e.radioManager.Start(vc)
 		}
 	}

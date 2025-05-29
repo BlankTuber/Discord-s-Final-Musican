@@ -5,6 +5,7 @@ import (
 	"musicbot/internal/radio"
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -53,10 +54,14 @@ func (c *LeaveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		c.radioManager.Stop()
 	}
 
+	time.Sleep(500 * time.Millisecond)
+
 	if c.stateManager.IsInIdleChannel() {
 		c.stateManager.SetBotState(state.StateIdle)
+
+		time.Sleep(500 * time.Millisecond)
 		vc := c.voiceManager.GetVoiceConnection()
-		if vc != nil {
+		if vc != nil && !c.radioManager.IsPlaying() {
 			c.radioManager.Start(vc)
 		}
 
@@ -76,8 +81,9 @@ func (c *LeaveCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 
 	c.stateManager.SetBotState(state.StateIdle)
 
+	time.Sleep(500 * time.Millisecond)
 	vc := c.voiceManager.GetVoiceConnection()
-	if vc != nil {
+	if vc != nil && !c.radioManager.IsPlaying() {
 		c.radioManager.Start(vc)
 	}
 

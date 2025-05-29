@@ -81,6 +81,8 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		c.radioManager.Stop()
 		c.musicManager.Stop()
 
+		time.Sleep(500 * time.Millisecond)
+
 		err = c.voiceManager.JoinUser(i.GuildID, userID)
 		if err != nil {
 			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -91,7 +93,7 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 
 		time.Sleep(500 * time.Millisecond)
 
-		if currentBotState == state.StateRadio {
+		if currentBotState == state.StateRadio && !c.radioManager.IsPlaying() {
 			vc := c.voiceManager.GetVoiceConnection()
 			if vc != nil {
 				c.radioManager.Start(vc)
@@ -105,6 +107,7 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 			})
 			return err
 		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -114,11 +117,9 @@ func (c *PlayCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCrea
 		return err
 	}
 
-	// Request song download asynchronously
 	go func() {
 		err := c.musicManager.RequestSong(url, userID)
 		if err != nil {
-			// Update the interaction with error message
 			s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 				Content: stringPtr(fmt.Sprintf("❌ Failed to request song: %v", err)),
 			})

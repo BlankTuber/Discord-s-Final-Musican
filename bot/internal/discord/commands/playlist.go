@@ -100,6 +100,8 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 		c.radioManager.Stop()
 		c.musicManager.Stop()
 
+		time.Sleep(500 * time.Millisecond)
+
 		err = c.voiceManager.JoinUser(i.GuildID, userID)
 		if err != nil {
 			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -110,7 +112,7 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 
 		time.Sleep(500 * time.Millisecond)
 
-		if currentBotState == state.StateRadio {
+		if currentBotState == state.StateRadio && !c.radioManager.IsPlaying() {
 			vc := c.voiceManager.GetVoiceConnection()
 			if vc != nil {
 				c.radioManager.Start(vc)
@@ -124,6 +126,7 @@ func (c *PlaylistCommand) Execute(s *discordgo.Session, i *discordgo.Interaction
 			})
 			return err
 		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{

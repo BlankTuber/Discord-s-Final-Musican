@@ -35,6 +35,8 @@ type Client struct {
 	playlistHandler      func([]state.Song)
 	searchHandler        func([]SearchResult)
 	playlistEventHandler func(string, *state.Song)
+	playlistStartHandler func(int)
+	resetPendingHandler  func()
 	mu                   sync.RWMutex
 	pendingRequests      map[string]chan interface{}
 }
@@ -44,6 +46,14 @@ func NewClient(socketPath string) *Client {
 		socketPath:      socketPath,
 		pendingRequests: make(map[string]chan interface{}),
 	}
+}
+
+func (c *Client) SetResetPendingHandler(handler func()) {
+	c.resetPendingHandler = handler
+}
+
+func (c *Client) SetPlaylistStartHandler(handler func(int)) {
+	c.playlistStartHandler = handler
 }
 
 func (c *Client) SetDownloadHandler(handler func(*state.Song)) {
@@ -72,6 +82,10 @@ func (c *Client) Connect() error {
 
 	c.conn = conn
 	c.connected = true
+
+	if c.resetPendingHandler != nil {
+		c.resetPendingHandler()
+	}
 
 	go c.listenForResponses()
 
@@ -206,36 +220,57 @@ func (c *Client) SendSearchRequest(query string, platform string, limit int) err
 }
 
 func (c *Client) sendMessage(data []byte) error {
-	messageLen := uint32(len(data))
+	if len(data) > 50*1024*1024 {
+		return fmt.Errorf("message too large: %d bytes", len(data))
+	}
 
+	messageLen := uint32(len(data))
 	lengthBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(lengthBuf, messageLen)
 
+	c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+
 	_, err := c.conn.Write(lengthBuf)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to write length: %w", err)
 	}
 
 	_, err = c.conn.Write(data)
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to write data: %w", err)
+	}
+
+	return nil
 }
 
 func (c *Client) readMessage() ([]byte, error) {
+	c.conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+
 	lengthBuf := make([]byte, 4)
 	_, err := io.ReadFull(c.conn, lengthBuf)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read length: %w", err)
 	}
 
 	messageLen := binary.BigEndian.Uint32(lengthBuf)
-	if messageLen > 10*1024*1024 {
-		return nil, fmt.Errorf("message too large: %d bytes", messageLen)
+
+	if messageLen == 0 {
+		return nil, fmt.Errorf("received zero-length message")
+	}
+
+	if messageLen > 100*1024*1024 {
+		return nil, fmt.Errorf("message too large: %d bytes (likely protocol error)", messageLen)
 	}
 
 	messageBuf := make([]byte, messageLen)
-	_, err = io.ReadFull(c.conn, messageBuf)
-	if err != nil {
-		return nil, err
+
+	totalRead := 0
+	for totalRead < int(messageLen) {
+		n, err := c.conn.Read(messageBuf[totalRead:])
+		if err != nil {
+			return nil, fmt.Errorf("failed to read message data at offset %d: %w", totalRead, err)
+		}
+		totalRead += n
 	}
 
 	return messageBuf, nil
@@ -245,6 +280,10 @@ func (c *Client) listenForResponses() {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error.Printf("Socket listener panic: %v", r)
+		}
+		if c.connected {
+			c.connected = false
+			logger.Info.Println("Socket listener stopped")
 		}
 	}()
 
@@ -256,6 +295,11 @@ func (c *Client) listenForResponses() {
 				c.connected = false
 			}
 			return
+		}
+
+		if len(data) == 0 {
+			logger.Error.Println("Received empty message")
+			continue
 		}
 
 		go c.handleResponse(data)
@@ -285,7 +329,10 @@ func (c *Client) handleResponse(data []byte) {
 	var response DownloadResponse
 	err := json.Unmarshal(data, &response)
 	if err != nil {
-		logger.Error.Printf("Failed to unmarshal response: %v", err)
+		logger.Error.Printf("Failed to unmarshal response (length: %d): %v", len(data), err)
+		if len(data) > 0 && len(data) < 200 {
+			logger.Error.Printf("Response data preview: %q", string(data))
+		}
 		return
 	}
 
@@ -294,6 +341,9 @@ func (c *Client) handleResponse(data []byte) {
 			c.handleSuccessResponse(response)
 		} else if response.Status == "error" {
 			logger.Error.Printf("Download request failed: %s", response.Error)
+			if c.downloadHandler != nil {
+				c.downloadHandler(nil)
+			}
 		}
 	} else if response.Type == "event" {
 		c.handleEventResponse(response)
@@ -374,7 +424,12 @@ func (c *Client) handleSuccessResponse(response DownloadResponse) {
 	}
 
 	if playlistID, hasPlaylistID := data["playlist_id"].(string); hasPlaylistID {
-		logger.Info.Printf("Started async playlist download: %s", playlistID)
+		totalTracks := getInt(data, "total_tracks")
+		logger.Info.Printf("Started async playlist download: %s with %d tracks", playlistID, totalTracks)
+
+		if c.playlistStartHandler != nil && totalTracks > 0 {
+			c.playlistStartHandler(totalTracks)
+		}
 	}
 }
 

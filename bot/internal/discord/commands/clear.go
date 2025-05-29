@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"fmt"
 	"musicbot/internal/music"
 	"musicbot/internal/radio"
 	"musicbot/internal/state"
 	"musicbot/internal/voice"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -46,33 +48,50 @@ func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	queueItems := c.musicManager.GetQueue()
-	if len(queueItems) == 0 {
+	if len(queueItems) == 0 && !c.musicManager.IsPlaying() {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 			Content: stringPtr("📭 Queue is already empty."),
 		})
 		return err
 	}
 
-	// Stop current music
-	currentState := c.stateManager.GetBotState()
-	if currentState == state.StateDJ {
-		c.musicManager.Stop()
-	}
-
-	// Clear the queue
-	err = c.musicManager.ClearQueue()
-	if err != nil {
+	if c.musicManager.HasActiveDownloads() {
+		pendingCount := c.musicManager.GetPendingDownloads()
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-			Content: stringPtr("❌ Failed to clear queue."),
+			Content: stringPtr(fmt.Sprintf("⏳ Cannot clear queue while %d songs are downloading. Please wait for downloads to complete.", pendingCount)),
 		})
 		return err
 	}
 
-	// Handle returning to idle state like leave command does
+	c.radioManager.Stop()
+	c.musicManager.Stop()
+
+	time.Sleep(1 * time.Second)
+
+	err = c.musicManager.ClearQueue()
+	if err != nil {
+		if err.Error() == "cannot clear queue while downloads are in progress" {
+			pendingCount := c.musicManager.GetPendingDownloads()
+			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr(fmt.Sprintf("⏳ Cannot clear queue while %d songs are downloading. Please wait for downloads to complete.", pendingCount)),
+			})
+		} else {
+			_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+				Content: stringPtr("❌ Failed to clear queue."),
+			})
+		}
+		return err
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
 	if c.stateManager.IsInIdleChannel() {
 		c.stateManager.SetBotState(state.StateIdle)
+
+		time.Sleep(500 * time.Millisecond)
+
 		vc := c.voiceManager.GetVoiceConnection()
-		if vc != nil {
+		if vc != nil && !c.radioManager.IsPlaying() {
 			c.radioManager.Start(vc)
 		}
 
@@ -82,7 +101,6 @@ func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 		return err
 	}
 
-	// Return to idle channel and start radio
 	err = c.voiceManager.LeaveToIdle(i.GuildID)
 	if err != nil {
 		_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
@@ -93,8 +111,10 @@ func (c *ClearCommand) Execute(s *discordgo.Session, i *discordgo.InteractionCre
 
 	c.stateManager.SetBotState(state.StateIdle)
 
+	time.Sleep(500 * time.Millisecond)
+
 	vc := c.voiceManager.GetVoiceConnection()
-	if vc != nil {
+	if vc != nil && !c.radioManager.IsPlaying() {
 		c.radioManager.Start(vc)
 	}
 
