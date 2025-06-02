@@ -283,7 +283,21 @@ func (p *Player) playFile(vc *discordgo.VoiceConnection, song *state.Song) error
 
 	defer func() {
 		if ffmpeg.Process != nil {
-			ffmpeg.Process.Kill()
+			ffmpeg.Process.Signal(os.Interrupt)
+
+			done := make(chan error, 1)
+			go func() {
+				done <- ffmpeg.Wait()
+			}()
+
+			select {
+			case <-done:
+				logger.Debug.Println("FFmpeg process terminated gracefully")
+			case <-time.After(2 * time.Second):
+				logger.Debug.Println("Force killing FFmpeg process")
+				ffmpeg.Process.Kill()
+				ffmpeg.Wait()
+			}
 		}
 	}()
 
