@@ -53,5 +53,6 @@ func GetDefaultStreams() []state.StreamOption {
 		{Name: "listen.moe", URL: "https://listen.moe/stream"},
 		{Name: "listen.moe (kpop)", URL: "https://listen.moe/kpop/stream"},
 		{Name: "lofi", URL: "https://streams.ilovemusic.de/iloveradio17.mp3"},
+		{Name: "video game music", URL: "https://relay.rainwave.cc/all.ogg?1:Xbo7app8bD"},
 	}
 }
